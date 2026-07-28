@@ -64,10 +64,20 @@ Lab machines vary — some have a capable GPU, some don't, some have one with an
 
 ## The installer
 
-Rather than a separate installer-building tool, `installer.py` is a small, dependency-free Tkinter GUI, built with PyInstaller the same way as the main app (`--onefile`, since it has no heavy dependencies of its own):
+Rather than a separate installer-building tool, `installer.py` is a small, dependency-free Tkinter GUI, built with PyInstaller the same way as the main app (`--onefile`, since it has no heavy dependencies of its own). It still uses Tkinter, so it needs the same [conda-env DLL fix](#dll-gotcha) as the main app — skipping it produces an installer that crashes immediately with `DLL load failed while importing _tkinter`:
 
 ```bash
-pyinstaller --name BrainLabLLMSetup --onefile --windowed --noconfirm --icon app_icon.ico installer.py
+pyinstaller --name BrainLabLLMSetup --onefile --windowed --noconfirm \
+  --icon app_icon.ico \
+  --add-binary "<conda-env>\Library\bin\tcl86t.dll;." \
+  --add-binary "<conda-env>\Library\bin\tk86t.dll;." \
+  --add-binary "<conda-env>\Library\bin\liblzma.dll;." \
+  --add-binary "<conda-env>\Library\bin\libbz2.dll;." \
+  --add-binary "<conda-env>\Library\bin\ffi.dll;." \
+  --add-binary "<conda-env>\Library\bin\ffi-7.dll;." \
+  --add-binary "<conda-env>\Library\bin\ffi-8.dll;." \
+  --add-binary "<conda-env>\Library\bin\libexpat.dll;." \
+  installer.py
 ```
 
 It expects the built `BrainLabLLM` folder to sit next to it, copies it to `%LOCALAPPDATA%\Programs\BrainLabLLM\` (a per-user location — no administrator rights needed), and creates Desktop and Start Menu shortcuts via a small PowerShell `WScript.Shell` COM call (no extra Python packages required for that either).
