@@ -1,8 +1,8 @@
 site_name: BrainLabLLM
 site_description: A local-first AI chat and meeting-notes assistant for the lab.
-site_url: https://YOUR-ORG.github.io/BrainLabLLM/
-repo_url: https://github.com/YOUR-ORG/BrainLabLLM
-repo_name: YOUR-ORG/BrainLabLLM
+site_url: https://denlau96.github.io/BrainLabLLM/
+repo_url: https://github.com/denlau96/BrainLabLLM
+repo_name: denlau96/BrainLabLLM
 edit_uri: edit/main/docs/
 
 theme:
@@ -97,6 +97,6 @@ extra_javascript:
 extra:
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/YOUR-ORG/BrainLabLLM
+      link: https://github.com/denlau96/BrainLabLLM
 
 copyright: Built for internal lab use.
