@@ -1,0 +1,22 @@
+.aider*
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# PyInstaller build output
+build/
+dist/
+*.spec
+
+# IDE
+.idea/
+
+# User/runtime data - never commit personal chat history or local config
+chats.json
+config.json
+settings.json
+
+# MkDocs build output
+site/
