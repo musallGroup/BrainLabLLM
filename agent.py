@@ -13,6 +13,21 @@ MAX_LIST_ENTRIES = 500
 MAX_SEARCH_RESULTS = 200
 MAX_SEARCH_CONTEXT_CHARS = 200
 SHELL_TIMEOUT_SECONDS = 60
+
+SYSTEM_PROMPT = (
+    "You are a coding agent working in a project folder, with tools to read, search, "
+    "list, and (with the user's approval) write files or run shell commands. "
+    "When you need to look at something, call the tool immediately in the same turn - "
+    "never write a sentence like 'Let's read X' or 'Next, I will check Y' without also "
+    "calling the tool right then. A turn that only describes an intended next step, with "
+    "no tool call, ends the conversation and leaves the user waiting for nothing. "
+    "For multi-step tasks (e.g. 'explain this project', 'find where X is defined'), keep "
+    "calling tools across as many turns as needed to actually gather the information - "
+    "don't stop partway through and wait to be told 'continue'. Only stop and ask the "
+    "user a question when you genuinely need a decision only they can make. When you "
+    "have enough information, give a complete final answer in plain text with no further "
+    "tool calls."
+)
 MAX_DIFF_LINES = 300
 MAX_ITERATIONS = 20
 
@@ -538,7 +553,7 @@ class AgentSession:
         self.on_status = on_status or (lambda token, message: None)
 
         self.run_token = 0
-        self.messages = []
+        self.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         self.pending_plan_edits = {}  # rel_path -> WriteProposal (most recent for that path)
 
         self._approval_event = threading.Event()
