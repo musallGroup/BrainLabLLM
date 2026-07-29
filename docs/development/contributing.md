@@ -11,7 +11,16 @@ This is an internal lab tool, but it's built to be easy to extend. A few notes f
 
 ## Testing changes
 
-There's no formal test suite (this is a small internal tool) — the practical approach used throughout development:
+`agent.py` has a real automated test suite under `tests/` (pytest) — path scoping, the read/write/edit/search/shell tools, diff computation, and `AgentSession`'s control flow (Planning vs. Auto mode, approve/reject, cancellation, the iteration cap, path-escape attempts). Run it with:
+
+```bash
+pip install pytest
+pytest tests/
+```
+
+Most tests are fast and don't touch the network. A handful (`tests/test_agent_live.py`, the classes marked `@requires_lab_server`) exercise the real tool-calling loop against the lab Ollama server and are skipped automatically with a clear reason if that server isn't reachable — this is deliberate: `agent.py` is tkinter-free by design (see [Architecture](../architecture.md)), which is exactly what makes it practical to test this way, unlike the Tkinter UI layer below.
+
+`main.py`, `meeting.py`, and the UI layer in general don't have an automated suite — the practical approach used throughout development instead:
 
 - **`meeting.py` changes**: test with `python meeting.py` (the built-in console test) before touching the UI, to isolate audio/transcription bugs from UI bugs.
 - **UI changes**: drive `ChatApp` methods directly from a throwaway script rather than clicking through manually — for example:
