@@ -34,6 +34,7 @@ flowchart LR
 | `main.py` | The Tkinter UI (`ChatApp`), configuration/settings persistence, chat networking (`query_ollama_stream`), and the map-reduce summarization logic. |
 | `meeting.py` | Everything audio: device enumeration, recording (`AudioRecorder`), and the record-then-transcribe orchestrator (`MeetingSession`). No UI code and no dependency on `main.py`. |
 | `theme.py` | Centralized color palette and `ttk.Style` configuration — the single source of truth for the app's visual design. |
+| `agent.py` | The coding-agent tool-calling loop (`AgentSession`), its tools (read/list/search/write/edit/run-shell), and the path-scoping security boundary (`resolve_scoped_path`). No UI code and no dependency on `main.py`, same as `meeting.py`. |
 | `installer.py` | A minimal, dependency-free Tkinter installer GUI, built separately from the main app (see [Packaging](development/packaging.md)). |
 
 ## Why batch transcription, not live { #why-batch-transcription }
@@ -79,6 +80,17 @@ Short transcripts that fit in a single chunk skip the map step entirely and go s
 The UI runs on Tkinter's single main thread, as it must. Every potentially slow operation — model loading, transcription, network requests to the AI server — runs on a background `threading.Thread`, with results marshaled back to the main thread via `root.after(0, ...)`, which is the only thread-safe way to touch Tkinter widgets from outside the main thread.
 
 A recurring pattern throughout the codebase is a **generation token**: an integer that's incremented every time a new operation starts (a new chat message sent, a new recording started, a new summarization triggered). Callbacks from a background thread check their captured token against the current one before touching the UI — if they don't match, a newer operation has superseded this one, and the stale callback is silently discarded. This is what makes "click Stop then immediately click Record again" or "start a new chat while a reply is still streaming" safe, without needing to actually cancel in-flight network requests or threads.
+
+## Agent: approval-gated tool calling { #agent-tool-calling }
+
+The Agent tab is built on Ollama's OpenAI-style tool calling: `AgentSession` sends the running conversation plus a list of tool schemas to `/api/chat`, the model responds with either plain text (done) or a `tool_calls` list naming a function and its arguments, `agent.py` executes the requested tool and feeds the result back as a `role: "tool"` message, and the cycle repeats until the model stops asking for tools or a hard iteration cap (`MAX_ITERATIONS = 20`) is hit. Planning and Auto mode share this one loop — they only differ in what happens when the model asks to change something.
+
+**Every mutating action is approval-gated, with no "fully autonomous" option**, for two reasons specific to this app's context: it's meant to be usable by people with no coding background who can't be expected to review code well enough to trust a model's judgment about when something is safe, and this project's own earlier attempt at unattended LLM-driven coding (`aider`, documented in [Development](development/contributing.md)) hallucinated non-existent APIs when left to work without tight, continuous supervision — a smaller local model making autonomous multi-step decisions on someone's actual files is exactly the failure mode to design against, not just a hypothetical risk.
+
+- **Planning mode** lets the model use read-only tools freely, but a proposed `write_file`/`edit_file` call is only ever turned into a diff for display — the file is never touched. This is implemented as a genuine interception, not a UI-layer suggestion: the write path is never called.
+- **Auto mode** runs the same loop, but a mutating tool call blocks the background thread on a `threading.Event` and shows the user the exact diff or shell command before it can proceed — reusing the same `root.after(0, ...)` + token-check pattern described above, so the Tk main loop is never touched while waiting. A rejection is fed back to the model as a tool result explaining the change was declined, so it adapts instead of silently retrying the same thing.
+
+**The project-folder boundary is enforced structurally, not just suggested to the model.** Every file tool routes through `resolve_scoped_path`, which rejects absolute paths outright and resolves symlinks before checking containment (`os.path.realpath` + `os.path.commonpath`, not a `startswith` check, which has a well-known prefix bug). This means a malicious or simply mistaken tool call — asking to read `../../something` — is blocked before it reaches the filesystem, regardless of what mode the session is in or whether the user would have approved it. `run_shell_command` is the one exception this boundary can't fully cover: a shell command can `cd` or use absolute paths internally no matter what `cwd` it's given, which is exactly why that tool is Auto-mode-only and its safety comes entirely from mandatory human approval of the literal command string, not from path scoping.
 
 ## Packaging
 

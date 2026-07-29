@@ -50,6 +50,7 @@ nav:
   - User Guide:
       - Chat: user-guide/chat.md
       - Meetings: user-guide/meetings.md
+      - Agent: user-guide/agent.md
       - Settings: user-guide/settings.md
   - Configuration: configuration.md
   - Troubleshooting: troubleshooting.md

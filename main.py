@@ -11,6 +11,7 @@ from tkinter import messagebox, ttk
 
 import requests
 
+import agent
 import meeting
 import theme
 
@@ -253,6 +254,12 @@ class ChatApp:
         self.meeting_summary_token = 0
         self.meeting_summarizing = False
 
+        self.agent_session = None
+        self.agent_busy = False
+        self.agent_run_token = 0
+        self.agent_project_root = None
+        self.agent_pending_approval = None
+
         root.title(APP_TITLE)
         if not getattr(sys, "frozen", False):
             # In dev mode, set the icon explicitly; the packaged exe already
@@ -368,6 +375,10 @@ class ChatApp:
         meeting_tab = ttk.Frame(notebook)
         notebook.add(meeting_tab, text="Meeting")
         self._build_meeting_tab(meeting_tab)
+
+        agent_tab = ttk.Frame(notebook)
+        notebook.add(agent_tab, text="Agent")
+        self._build_agent_tab(agent_tab)
 
         paned = ttk.Panedwindow(chat_tab, orient=tk.HORIZONTAL)
         paned.pack(fill=tk.BOTH, expand=True)
@@ -1167,9 +1178,345 @@ class ChatApp:
         except OSError as exc:
             messagebox.showerror("Export failed", f"Could not save the file:\n\n{exc}")
 
+    def _build_agent_tab(self, tab):
+        top_row = ttk.Frame(tab)
+        top_row.pack(fill=tk.X, padx=16, pady=(16, 8))
+
+        ttk.Label(top_row, text="Project folder:", style="SectionTitle.TLabel").pack(side=tk.LEFT)
+
+        self.agent_project_dir_var = tk.StringVar(value="No folder selected")
+        ttk.Entry(top_row, textvariable=self.agent_project_dir_var, state="readonly").pack(
+            side=tk.LEFT, padx=(8, 8), fill=tk.X, expand=True
+        )
+        self.agent_browse_button = ttk.Button(
+            top_row, text="Browse...", command=self._pick_agent_project_folder
+        )
+        self.agent_browse_button.pack(side=tk.LEFT)
+
+        mode_row = ttk.Frame(tab)
+        mode_row.pack(fill=tk.X, padx=16, pady=(0, 12))
+
+        ttk.Label(mode_row, text="Mode:", style="SectionTitle.TLabel").pack(side=tk.LEFT)
+
+        self.agent_mode_var = tk.StringVar(value="planning")
+        self.agent_planning_radio = ttk.Radiobutton(
+            mode_row, text="Planning (propose changes only)", value="planning", variable=self.agent_mode_var
+        )
+        self.agent_planning_radio.pack(side=tk.LEFT, padx=(10, 12))
+        self.agent_auto_radio = ttk.Radiobutton(
+            mode_row, text="Auto (executes, with approval)", value="auto", variable=self.agent_mode_var
+        )
+        self.agent_auto_radio.pack(side=tk.LEFT)
+
+        # Input area packed BOTTOM before the transcript (TOP, expand=True),
+        # same reasoning as the chat tab's input_frame/history_frame ordering:
+        # a fixed-size widget packed after an expanding sibling can get
+        # squeezed out of view entirely at small window sizes.
+        input_frame = tk.Frame(tab, bg=theme.BG_CARD, highlightbackground=theme.BORDER, highlightthickness=1)
+        input_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=16, pady=(8, 16))
+
+        self.agent_send_button = ttk.Button(
+            input_frame, text="Send ➤", style="Accent.TButton", command=self._start_agent_run
+        )
+        self.agent_send_button.pack(side=tk.RIGHT, padx=8, pady=8)
+
+        self.agent_input = tk.Text(
+            input_frame,
+            height=3,
+            wrap=tk.WORD,
+            font=(theme.FONT_FAMILY, 10),
+            borderwidth=0,
+            bg=theme.BG_CARD,
+            fg=theme.TEXT_PRIMARY,
+            padx=10,
+            pady=8,
+            insertbackground=theme.TEXT_PRIMARY,
+        )
+        self.agent_input.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.agent_input.bind("<Return>", self._on_agent_return)
+
+        status_row = ttk.Frame(tab)
+        status_row.pack(side=tk.BOTTOM, fill=tk.X, padx=16)
+        self.agent_status_var = tk.StringVar(value="Pick a project folder to get started.")
+        ttk.Label(status_row, textvariable=self.agent_status_var, style="Secondary.TLabel").pack(
+            side=tk.RIGHT, pady=(0, 4)
+        )
+
+        transcript_frame = tk.Frame(
+            tab, bg=theme.BG_CARD, highlightbackground=theme.BORDER, highlightthickness=1
+        )
+        transcript_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=16, pady=(0, 8))
+
+        scrollbar = ttk.Scrollbar(transcript_frame)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self.agent_transcript = tk.Text(
+            transcript_frame,
+            wrap=tk.WORD,
+            state=tk.DISABLED,
+            borderwidth=0,
+            bg=theme.BG_CARD,
+            fg=theme.TEXT_PRIMARY,
+            padx=16,
+            pady=14,
+            spacing3=4,
+            yscrollcommand=scrollbar.set,
+        )
+        self.agent_transcript.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.config(command=self.agent_transcript.yview)
+        self._configure_message_tags(self.agent_transcript)
+        self._configure_agent_tags(self.agent_transcript)
+
+        self.agent_transcript.config(state=tk.NORMAL)
+        self.agent_transcript.insert(
+            tk.END,
+            "🤖  Pick a project folder above, then describe what you'd like help with.",
+            "empty_state",
+        )
+        self.agent_transcript.config(state=tk.DISABLED)
+
+        settings = load_settings()
+        saved_dir = settings.get("last_agent_project_dir")
+        if saved_dir and os.path.isdir(saved_dir):
+            self.agent_project_root = saved_dir
+            self.agent_project_dir_var.set(saved_dir)
+            self.agent_status_var.set("Ready.")
+
+    def _configure_agent_tags(self, widget):
+        widget.tag_configure("tool_call", foreground=theme.TEXT_SECONDARY, font=(theme.FONT_FAMILY, 10, "italic"))
+        widget.tag_configure(
+            "diff_header", foreground=theme.TEXT_SECONDARY, font=(theme.FONT_MONO, 9, "bold")
+        )
+        widget.tag_configure(
+            "diff_add", foreground=theme.SUCCESS_TEXT, background=theme.SUCCESS_LIGHT, font=(theme.FONT_MONO, 9)
+        )
+        widget.tag_configure(
+            "diff_remove", foreground=theme.DANGER_TEXT, background=theme.DANGER_LIGHT, font=(theme.FONT_MONO, 9)
+        )
+        widget.tag_configure("diff_context", foreground=theme.TEXT_SECONDARY, font=(theme.FONT_MONO, 9))
+        widget.tag_configure(
+            "approval_banner", background=theme.WARNING_LIGHT, font=(theme.FONT_FAMILY, 9, "bold")
+        )
+
+    def _pick_agent_project_folder(self):
+        chosen = filedialog.askdirectory(title="Choose a project folder for the agent")
+        if not chosen:
+            return
+        self.agent_project_root = chosen
+        self.agent_project_dir_var.set(chosen)
+        self.agent_status_var.set("Ready.")
+        settings = load_settings()
+        settings["last_agent_project_dir"] = chosen
+        save_settings(settings)
+
+    def _set_agent_controls_enabled(self, enabled):
+        state = tk.NORMAL if enabled else tk.DISABLED
+        self.agent_browse_button.config(state=state)
+        self.agent_planning_radio.config(state=state)
+        self.agent_auto_radio.config(state=state)
+
+    def _on_agent_return(self, event):
+        if event.state & 0x1:
+            return
+        self._start_agent_run()
+        return "break"
+
+    def _agent_append(self, text, tags=()):
+        self.agent_transcript.config(state=tk.NORMAL)
+        self.agent_transcript.insert(tk.END, text, tags)
+        self.agent_transcript.config(state=tk.DISABLED)
+        self.agent_transcript.see(tk.END)
+
+    def _agent_append_diff(self, diff_lines):
+        self.agent_transcript.config(state=tk.NORMAL)
+        tag_map = {"header": "diff_header", "add": "diff_add", "remove": "diff_remove", "context": "diff_context"}
+        for kind, line in diff_lines:
+            self.agent_transcript.insert(tk.END, line + "\n", tag_map.get(kind, "diff_context"))
+        self.agent_transcript.config(state=tk.DISABLED)
+        self.agent_transcript.see(tk.END)
+
+    def _start_agent_run(self):
+        if self.agent_busy:
+            return
+        if not self.agent_project_root:
+            messagebox.showinfo("Choose a project folder", "Pick a project folder before starting the agent.")
+            return
+        instruction = self.agent_input.get("1.0", tk.END).strip()
+        if not instruction:
+            return
+        self.agent_input.delete("1.0", tk.END)
+
+        self.agent_transcript.config(state=tk.NORMAL)
+        self.agent_transcript.delete("1.0", tk.END)
+        self.agent_transcript.config(state=tk.DISABLED)
+
+        self.agent_busy = True
+        self._set_agent_controls_enabled(False)
+        self.agent_send_button.config(text="⏹  Stop", style="Danger.TButton", command=self._stop_agent_run)
+        self.agent_status_var.set("Working...")
+
+        self._agent_append("You\n", "user_label")
+        self._agent_append(instruction + "\n\n", ("user_bubble", "body"))
+
+        if self.agent_session is None or self.agent_session.project_root != self.agent_project_root:
+            self.agent_session = agent.AgentSession(
+                self.root,
+                self.agent_project_root,
+                API_URL,
+                MODEL,
+                mode=self.agent_mode_var.get(),
+                on_assistant_text=self._on_agent_assistant_text,
+                on_tool_call_start=self._on_agent_tool_call_start,
+                on_tool_call_result=self._on_agent_tool_call_result,
+                on_approval_needed=self._on_agent_approval_needed,
+                on_done=self._on_agent_done,
+                on_error=self._on_agent_error,
+                on_status=self._on_agent_status,
+            )
+        else:
+            self.agent_session.mode = self.agent_mode_var.get()
+
+        self.agent_run_token = self.agent_session.start(instruction)
+
+    def _stop_agent_run(self):
+        if self.agent_session is not None:
+            self.agent_session.cancel()
+        self._agent_run_finished("Stopped.")
+
+    def _agent_run_finished(self, status_text):
+        self.agent_busy = False
+        self.agent_pending_approval = None
+        self._set_agent_controls_enabled(True)
+        self.agent_send_button.config(text="Send ➤", style="Accent.TButton", command=self._start_agent_run)
+        self.agent_status_var.set(status_text)
+
+    def _on_agent_assistant_text(self, token, text):
+        if token != self.agent_run_token:
+            return
+        # _insert_formatted expects the widget already NORMAL and leaves state
+        # management to the caller - it must be bracketed by a single
+        # NORMAL/DISABLED pair covering the label + body together (mirroring
+        # _append_turn), not interleaved with self-toggling _agent_append
+        # calls, or Tk silently drops inserts made while DISABLED in between.
+        self.agent_transcript.config(state=tk.NORMAL)
+        self.agent_transcript.insert(tk.END, "Assistant\n", "assistant_label")
+        self._insert_formatted(self.agent_transcript, text, "assistant_bubble")
+        self.agent_transcript.insert(tk.END, "\n\n")
+        self.agent_transcript.config(state=tk.DISABLED)
+        self.agent_transcript.see(tk.END)
+
+    def _on_agent_tool_call_start(self, token, name, arguments):
+        if token != self.agent_run_token:
+            return
+        icons = {
+            "read_file": "📄",
+            "list_directory": "📁",
+            "search_code": "🔍",
+            "write_file": "✏️",
+            "edit_file": "✏️",
+            "run_shell_command": "💻",
+        }
+        icon = icons.get(name, "🔧")
+        detail = arguments.get("path") or arguments.get("command") or ""
+        self._agent_append(f"{icon} {name}({detail})...\n", "tool_call")
+
+    def _on_agent_tool_call_result(self, token, name, payload):
+        if token != self.agent_run_token:
+            return
+        kind = payload.get("kind")
+        if kind == "diff":
+            self._agent_append(f"Proposed change to {payload['path']}:\n", "tool_call")
+            self._agent_append_diff(payload["diff"])
+            self._agent_append("\n")
+        elif kind == "shell_command":
+            self._agent_append(f"$ {payload['command']}\n", "diff_header")
+        else:
+            self._agent_append(f"  {payload.get('summary', 'Done.')}\n", "tool_call")
+
+    def _on_agent_approval_needed(self, token, info):
+        if token != self.agent_run_token:
+            return
+        self.agent_pending_approval = info
+
+        self.agent_transcript.config(state=tk.NORMAL)
+        if info["kind"] == "file_edit":
+            self.agent_transcript.insert(tk.END, f"⚠ Approve edit to {info['path']}?\n", "approval_banner")
+            tag_map = {"header": "diff_header", "add": "diff_add", "remove": "diff_remove", "context": "diff_context"}
+            for kind, line in info["diff"]:
+                self.agent_transcript.insert(tk.END, line + "\n", tag_map.get(kind, "diff_context"))
+        else:
+            self.agent_transcript.insert(
+                tk.END, f"⚠ Approve running this command in {info.get('cwd', '.')}?\n", "approval_banner"
+            )
+            self.agent_transcript.insert(tk.END, f"$ {info['command']}\n", "diff_header")
+
+        approval_frame = ttk.Frame(self.agent_transcript)
+        approve_btn = ttk.Button(
+            approval_frame,
+            text="Approve",
+            style="Accent.TButton",
+            command=lambda: self._on_agent_approval_decision(token, True, approval_frame, approve_btn, reject_btn),
+        )
+        approve_btn.pack(side=tk.LEFT, padx=(0, 6))
+        reject_btn = ttk.Button(
+            approval_frame,
+            text="Reject",
+            style="Danger.TButton",
+            command=lambda: self._on_agent_approval_decision(token, False, approval_frame, approve_btn, reject_btn),
+        )
+        reject_btn.pack(side=tk.LEFT)
+        self.agent_transcript.window_create(tk.END, window=approval_frame)
+        self.agent_transcript.insert(tk.END, "\n\n")
+        self.agent_transcript.config(state=tk.DISABLED)
+        self.agent_transcript.see(tk.END)
+
+        self.agent_status_var.set("Waiting for your approval...")
+
+    def _on_agent_approval_decision(self, token, approved, approval_frame, approve_btn, reject_btn):
+        # Guards against a stale click on an approval block from a run that
+        # was since cancelled/superseded (same token-check idiom used
+        # throughout this app for background-thread callbacks).
+        if token != self.agent_run_token or self.agent_pending_approval is None:
+            return
+        approve_btn.config(state=tk.DISABLED)
+        reject_btn.config(state=tk.DISABLED)
+        for child in approval_frame.winfo_children():
+            child.destroy()
+        ttk.Label(
+            approval_frame, text="Approved ✓" if approved else "Rejected ✕", style="Secondary.TLabel"
+        ).pack()
+        self.agent_pending_approval = None
+        self.agent_status_var.set("Working...")
+        self.agent_session.submit_approval(approved)
+
+    def _on_agent_done(self, token, content, pending_plan_edits):
+        if token != self.agent_run_token:
+            return
+        if pending_plan_edits:
+            self._agent_append(
+                f"📋 Plan complete - {len(pending_plan_edits)} proposed change(s) shown above "
+                f"(nothing written to disk). Switch to Auto mode to apply them.\n\n",
+                "tool_call",
+            )
+        self._agent_run_finished("Done.")
+
+    def _on_agent_error(self, token, message):
+        if token != self.agent_run_token:
+            return
+        self._agent_append(f"Error: {message}\n\n", "error")
+        self._agent_run_finished("Error - see above.")
+
+    def _on_agent_status(self, token, message):
+        if token != self.agent_run_token:
+            return
+        self._agent_append(f"{message}\n\n", "tool_call")
+        self._agent_run_finished(message)
+
     def _on_close(self):
         if self.meeting_recording and self.meeting_session is not None:
             self.meeting_session.stop()
+        if self.agent_busy and self.agent_session is not None:
+            self.agent_session.cancel()
         self.root.destroy()
 
     def _set_waiting(self, waiting):
@@ -1214,7 +1561,7 @@ class ChatApp:
         if body_tag:
             self.history.insert(tk.END, f"{text}\n\n", (bubble_tag, body_tag))
         else:
-            self._insert_formatted(text, bubble_tag)
+            self._insert_formatted(self.history, text, bubble_tag)
             self.history.insert(tk.END, "\n\n")
         self.history.config(state=tk.DISABLED)
         self.history.see(tk.END)
@@ -1225,29 +1572,29 @@ class ChatApp:
         self.history.config(state=tk.DISABLED)
         self.history.see(tk.END)
 
-    def _insert_formatted(self, text, bubble_tag):
+    def _insert_formatted(self, widget, text, bubble_tag):
         pos = 0
         for m in CODE_BLOCK_RE.finditer(text):
             if m.start() > pos:
-                self._insert_inline(text[pos:m.start()], bubble_tag)
+                self._insert_inline(widget, text[pos:m.start()], bubble_tag)
             code = m.group(1).rstrip("\n")
-            self.history.insert(tk.END, code + "\n", "code_block")
+            widget.insert(tk.END, code + "\n", "code_block")
             pos = m.end()
         if pos < len(text):
-            self._insert_inline(text[pos:], bubble_tag)
+            self._insert_inline(widget, text[pos:], bubble_tag)
 
-    def _insert_inline(self, segment, bubble_tag):
+    def _insert_inline(self, widget, segment, bubble_tag):
         pos = 0
         for m in INLINE_RE.finditer(segment):
             if m.start() > pos:
-                self.history.insert(tk.END, segment[pos:m.start()], (bubble_tag, "body"))
+                widget.insert(tk.END, segment[pos:m.start()], (bubble_tag, "body"))
             if m.group(1) is not None:
-                self.history.insert(tk.END, m.group(1), "inline_code")
+                widget.insert(tk.END, m.group(1), "inline_code")
             else:
-                self.history.insert(tk.END, m.group(2), (bubble_tag, "bold"))
+                widget.insert(tk.END, m.group(2), (bubble_tag, "bold"))
             pos = m.end()
         if pos < len(segment):
-            self.history.insert(tk.END, segment[pos:], (bubble_tag, "body"))
+            widget.insert(tk.END, segment[pos:], (bubble_tag, "body"))
 
 
 def main():
