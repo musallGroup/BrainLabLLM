@@ -18,6 +18,10 @@ Click **Save**, then restart the app for the new settings to take effect.
 !!! note "Why a restart?"
     Keeping configuration as a simple, restart-to-apply setting avoids a class of bugs where half the app is using old settings and half is using new ones mid-session — deliberately simple over deliberately clever.
 
+## Dark mode
+
+**View → Dark Mode** switches the whole app's color theme instantly — no restart needed. Your choice is remembered for next time.
+
 ## What's not in this dialog
 
 The speech-to-text model size and whether it prefers GPU or CPU are set via the `config.json` file instead, since they're the kind of setting an administrator sets up once per machine rather than something an individual user changes day to day. See [Configuration](../configuration.md).
