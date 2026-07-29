@@ -155,6 +155,7 @@ class MeetingSession:
         on_device_ready=None,
         on_recording_started=None,
         on_recording_failed=None,
+        on_error=None,
     ):
         self.root = root
         self.device = device if device is not None else find_input_device()
@@ -165,6 +166,11 @@ class MeetingSession:
         self.on_device_ready = on_device_ready or (lambda device_used: None)
         self.on_recording_started = on_recording_started or (lambda: None)
         self.on_recording_failed = on_recording_failed or (lambda: None)
+        # Distinct from on_status: a transcription failure needs the caller
+        # to also unstick any "busy" UI state, not just display a message -
+        # on_status alone can't tell the caller the operation is actually
+        # over (see main.py's _on_meeting_error).
+        self.on_error = on_error or (lambda msg: None)
 
         self.recording_token = 0
         self.recorder = None
@@ -283,7 +289,7 @@ class MeetingSession:
             try:
                 self._ensure_model_loaded()
             except Exception as exc:
-                self.root.after(0, self._handle_status, token, f"Failed to load transcription model: {exc}")
+                self.root.after(0, self._handle_error, token, f"Failed to load transcription model: {exc}")
                 return
             if token != self.recording_token:
                 return
@@ -291,12 +297,53 @@ class MeetingSession:
                 segments, info = self.model.transcribe(audio, beam_size=5, vad_filter=True)
                 text = " ".join(s.text.strip() for s in segments)
             except Exception as exc:
-                self.root.after(0, self._handle_status, token, f"Transcription failed: {exc}")
+                self.root.after(0, self._handle_error, token, f"Transcription failed: {exc}")
                 return
             self.root.after(0, self._handle_transcript, token, text)
             self.root.after(0, self._handle_status, token, "Done")
 
         threading.Thread(target=transcribe, daemon=True).start()
+
+    def transcribe_file(self, path):
+        """Transcribes an existing audio/video file rather than a live
+        recording - reuses the same model (loading it with the same
+        GPU/CPU fallback if not already loaded) and the same
+        on_transcript/on_status/on_error callbacks as live recording, so a
+        caller that already has a MeetingSession wired up needs no separate
+        UI-update path for this.
+
+        faster-whisper decodes the file itself (via PyAV, so effectively
+        anything ffmpeg understands - wav/mp3/m4a/etc, even video files)
+        given a path directly, unlike the live-recording path which has to
+        manually capture and resample raw audio.
+        """
+        self.recording_token += 1
+        token = self.recording_token
+        filename = os.path.basename(path)
+
+        def transcribe():
+            self.root.after(0, self._handle_status, token, "Loading model...")
+            try:
+                self._ensure_model_loaded()
+            except Exception as exc:
+                self.root.after(0, self._handle_error, token, f"Failed to load transcription model: {exc}")
+                return
+            if token != self.recording_token:
+                return
+            self.root.after(0, self._handle_status, token, f"Transcribing {filename}...")
+            try:
+                segments, info = self.model.transcribe(path, beam_size=5, vad_filter=True)
+                text = " ".join(s.text.strip() for s in segments)
+            except Exception as exc:
+                self.root.after(0, self._handle_error, token, f"Transcription failed: {exc}")
+                return
+            if token != self.recording_token:
+                return
+            self.root.after(0, self._handle_transcript, token, text)
+            self.root.after(0, self._handle_status, token, "Done")
+
+        threading.Thread(target=transcribe, daemon=True).start()
+        return token
 
     def _handle_status(self, token, msg):
         if token != self.recording_token:
@@ -317,6 +364,11 @@ class MeetingSession:
         if token != self.recording_token:
             return
         self.on_transcript(text)
+
+    def _handle_error(self, token, msg):
+        if token != self.recording_token:
+            return
+        self.on_error(msg)
 
 
 def _console_test(device=None, duration=30):

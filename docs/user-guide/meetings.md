@@ -14,6 +14,12 @@ Click **● Record**. The button turns red and becomes **⏹ Stop**, and a timer
 
 Click **⏹ Stop** when you're done. The status area shows progress: *Stopping...* → *Transcribing...* → *Done*, and the full transcript appears in the Transcript panel once processing finishes.
 
+## Transcribing an existing recording
+
+Already have an audio or video file — a recording from a phone, a webinar download, a call recorded elsewhere? Click **📁 Transcribe File...** instead of Record, and pick the file. It runs through the exact same transcription (and afterward, summarization) pipeline as a live recording; the only difference is the audio comes from a file instead of a microphone. Most common formats work (wav, mp3, m4a, flac, ogg, and others) — anything the file dialog doesn't recognize can still be selected via "All files".
+
+Recording and file transcription can't run at the same time — both buttons disable while either one is working, so there's no risk of them fighting over the same transcript.
+
 ### Why no live transcript? { #why-no-live-transcript }
 
 An earlier version of this app showed the transcript incrementally while recording, using a voice-activity detector to chop speech into utterances as you talked. In testing, this broke down noticeably for fast or continuous speech: natural micro-pauses (a breath, a brief hesitation) were often mistaken for sentence breaks, fragmenting continuous thoughts mid-sentence and occasionally producing short, out-of-context clips that the speech model would fill in with plausible-sounding but wrong text.

@@ -297,6 +297,7 @@ class ChatApp:
 
         self.meeting_session = None
         self.meeting_recording = False
+        self.meeting_file_busy = False
         self.meeting_start_time = None
         self._meeting_timer_job = None
         self.meeting_transcript_text = ""
@@ -957,6 +958,12 @@ class ChatApp:
         )
         self.meeting_button.pack(side=tk.LEFT)
 
+        self.meeting_file_button = ttk.Button(
+            toolbar, text="📁  Transcribe File...", command=self._pick_meeting_audio_file
+        )
+        self.meeting_file_button.pack(side=tk.LEFT, padx=(6, 0))
+        ToolTip(self.meeting_file_button, "Transcribe an existing audio or video recording instead of recording live")
+
         self.meeting_timer_var = tk.StringVar(value="00:00")
         ttk.Label(toolbar, textvariable=self.meeting_timer_var, font=(theme.FONT_FAMILY, 12, "bold")).pack(
             side=tk.LEFT, padx=(14, 0)
@@ -1136,6 +1143,8 @@ class ChatApp:
         if self.meeting_recording:
             self._stop_meeting_recording()
         else:
+            if self.meeting_file_busy:
+                return
             self._start_meeting_recording()
 
     def _start_meeting_recording(self):
@@ -1144,6 +1153,29 @@ class ChatApp:
             messagebox.showwarning("No microphone selected", "Please select a microphone before recording.")
             return
 
+        self._reset_meeting_panels()
+
+        self.meeting_status_var.set("Loading model...")
+        self.meeting_button.config(state=tk.DISABLED)
+        self.meeting_file_button.config(state=tk.DISABLED)
+        self.meeting_device_combo.config(state=tk.DISABLED)
+        self.meeting_test_button.config(state=tk.DISABLED)
+
+        self.meeting_session = meeting.MeetingSession(
+            self.root,
+            device=device,
+            model_size=WHISPER_MODEL_SIZE,
+            device_preference=WHISPER_DEVICE,
+            on_transcript=lambda text: self.root.after(0, self._on_meeting_transcript, text),
+            on_status=lambda msg: self.root.after(0, self._on_meeting_status, msg),
+            on_device_ready=lambda device_used: self.root.after(0, self._on_meeting_device_ready, device_used),
+            on_recording_started=lambda: self.root.after(0, self._on_meeting_started),
+            on_recording_failed=lambda: self.root.after(0, self._on_meeting_start_failed),
+            on_error=lambda msg: self.root.after(0, self._on_meeting_error, msg),
+        )
+        self.meeting_session.start()
+
+    def _reset_meeting_panels(self):
         self.meeting_transcript.config(state=tk.NORMAL)
         self.meeting_transcript.delete("1.0", tk.END)
         self.meeting_transcript.config(state=tk.DISABLED)
@@ -1158,23 +1190,45 @@ class ChatApp:
         self.meeting_export_button.config(state=tk.DISABLED)
         self.meeting_device_used_var.set("")
 
-        self.meeting_status_var.set("Loading model...")
+    def _pick_meeting_audio_file(self):
+        if self.meeting_recording or self.meeting_file_busy:
+            return
+        path = filedialog.askopenfilename(
+            title="Choose an audio or video recording to transcribe",
+            filetypes=[
+                ("Audio/video files", "*.wav *.mp3 *.m4a *.flac *.ogg *.wma *.aac *.mp4 *.mov *.mkv"),
+                ("All files", "*.*"),
+            ],
+        )
+        if not path:
+            return
+        self._transcribe_meeting_file(path)
+
+    def _transcribe_meeting_file(self, path):
+        self._reset_meeting_panels()
+
+        self.meeting_file_busy = True
         self.meeting_button.config(state=tk.DISABLED)
+        self.meeting_file_button.config(state=tk.DISABLED)
         self.meeting_device_combo.config(state=tk.DISABLED)
         self.meeting_test_button.config(state=tk.DISABLED)
+        self.meeting_status_var.set("Loading model...")
 
-        self.meeting_session = meeting.MeetingSession(
-            self.root,
-            device=device,
-            model_size=WHISPER_MODEL_SIZE,
-            device_preference=WHISPER_DEVICE,
-            on_transcript=lambda text: self.root.after(0, self._on_meeting_transcript, text),
-            on_status=lambda msg: self.root.after(0, self._on_meeting_status, msg),
-            on_device_ready=lambda device_used: self.root.after(0, self._on_meeting_device_ready, device_used),
-            on_recording_started=lambda: self.root.after(0, self._on_meeting_started),
-            on_recording_failed=lambda: self.root.after(0, self._on_meeting_start_failed),
-        )
-        self.meeting_session.start()
+        if self.meeting_session is None:
+            device = self._get_selected_device_index()
+            self.meeting_session = meeting.MeetingSession(
+                self.root,
+                device=device,
+                model_size=WHISPER_MODEL_SIZE,
+                device_preference=WHISPER_DEVICE,
+                on_transcript=lambda text: self.root.after(0, self._on_meeting_transcript, text),
+                on_status=lambda msg: self.root.after(0, self._on_meeting_status, msg),
+                on_device_ready=lambda device_used: self.root.after(0, self._on_meeting_device_ready, device_used),
+                on_recording_started=lambda: self.root.after(0, self._on_meeting_started),
+                on_recording_failed=lambda: self.root.after(0, self._on_meeting_start_failed),
+                on_error=lambda msg: self.root.after(0, self._on_meeting_error, msg),
+            )
+        self.meeting_session.transcribe_file(path)
 
     def _on_meeting_started(self):
         self.meeting_recording = True
@@ -1184,6 +1238,7 @@ class ChatApp:
 
     def _on_meeting_start_failed(self):
         self.meeting_button.config(text="●  Record", style="Accent.TButton", state=tk.NORMAL)
+        self.meeting_file_button.config(state=tk.NORMAL)
         self.meeting_device_combo.config(state="readonly")
         self.meeting_test_button.config(state=tk.NORMAL)
 
@@ -1219,7 +1274,9 @@ class ChatApp:
         self.meeting_transcript.delete("1.0", tk.END)
         self.meeting_transcript.insert(tk.END, text if text else "(no speech detected)")
         self.meeting_transcript.config(state=tk.DISABLED)
+        self.meeting_file_busy = False
         self.meeting_button.config(state=tk.NORMAL)
+        self.meeting_file_button.config(state=tk.NORMAL)
         self.meeting_device_combo.config(state="readonly")
         self.meeting_test_button.config(state=tk.NORMAL)
         if text:
@@ -1229,6 +1286,22 @@ class ChatApp:
 
     def _on_meeting_status(self, msg):
         self.meeting_status_var.set(msg)
+
+    def _on_meeting_error(self, msg):
+        # Distinct from _on_meeting_status: a transcription failure needs to
+        # unstick the busy UI state too, not just display the message - the
+        # success path (_on_meeting_transcript) does this, but never fires
+        # if transcription itself raised.
+        self.meeting_status_var.set(msg)
+        self.meeting_recording = False
+        self.meeting_file_busy = False
+        if self._meeting_timer_job is not None:
+            self.root.after_cancel(self._meeting_timer_job)
+            self._meeting_timer_job = None
+        self.meeting_button.config(text="●  Record", style="Accent.TButton", state=tk.NORMAL)
+        self.meeting_file_button.config(state=tk.NORMAL)
+        self.meeting_device_combo.config(state="readonly")
+        self.meeting_test_button.config(state=tk.NORMAL)
 
     def summarize_meeting(self):
         if self.meeting_summarizing or not self.meeting_transcript_text:
