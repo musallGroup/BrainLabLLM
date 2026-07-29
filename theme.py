@@ -137,6 +137,7 @@ def setup_style(root):
     style.map("TCombobox", fieldbackground=[("readonly", BG_CARD)], foreground=[("readonly", TEXT_PRIMARY)])
 
     style.configure("TEntry", fieldbackground=BG_CARD, bordercolor=BORDER, padding=6)
+    style.map("TEntry", selectbackground=[("!disabled", ACCENT)], selectforeground=[("!disabled", "#FFFFFF")])
 
     style.configure("TPanedwindow", background=BG_APP)
     style.configure("TScrollbar", background=BG_APP, troughcolor=BG_APP, bordercolor=BG_APP, arrowsize=12)

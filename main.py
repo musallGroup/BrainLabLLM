@@ -235,6 +235,56 @@ def save_conversations(conversations, path=CHATS_FILE):
         json.dump(conversations, f, indent=2, ensure_ascii=False)
 
 
+class ToolTip:
+    """Delayed hover tooltip - Tkinter has no built-in equivalent, so this
+    implements the standard Toplevel-based pattern used everywhere else."""
+
+    def __init__(self, widget, text, delay=500):
+        self.widget = widget
+        self.text = text
+        self.delay = delay
+        self._after_id = None
+        self._tip_window = None
+        widget.bind("<Enter>", self._schedule, add="+")
+        widget.bind("<Leave>", self._hide, add="+")
+        widget.bind("<ButtonPress>", self._hide, add="+")
+
+    def _schedule(self, event=None):
+        self._cancel()
+        self._after_id = self.widget.after(self.delay, self._show)
+
+    def _cancel(self):
+        if self._after_id is not None:
+            self.widget.after_cancel(self._after_id)
+            self._after_id = None
+
+    def _show(self):
+        if self._tip_window is not None:
+            return
+        x = self.widget.winfo_rootx() + 12
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 6
+        self._tip_window = tw = tk.Toplevel(self.widget)
+        tw.wm_overrideredirect(True)
+        tw.wm_geometry(f"+{x}+{y}")
+        tk.Label(
+            tw,
+            text=self.text,
+            justify=tk.LEFT,
+            background=theme.BG_SIDEBAR,
+            foreground=theme.TEXT_ON_DARK,
+            font=(theme.FONT_FAMILY, 9),
+            padx=8,
+            pady=4,
+            wraplength=280,
+        ).pack()
+
+    def _hide(self, event=None):
+        self._cancel()
+        if self._tip_window is not None:
+            self._tip_window.destroy()
+            self._tip_window = None
+
+
 class ChatApp:
     def __init__(self, root):
         self.root = root
@@ -355,7 +405,9 @@ class ChatApp:
 
         button_row = ttk.Frame(dialog)
         button_row.pack(pady=16)
-        ttk.Button(button_row, text="Test Connection", command=test_connection).pack(side=tk.LEFT, padx=4)
+        test_connection_button = ttk.Button(button_row, text="Test Connection", command=test_connection)
+        test_connection_button.pack(side=tk.LEFT, padx=4)
+        ToolTip(test_connection_button, "Sends a quick test message to confirm the AI server is reachable")
         ttk.Button(button_row, text="Save", style="Accent.TButton", command=save_and_close).pack(
             side=tk.LEFT, padx=4
         )
@@ -438,6 +490,7 @@ class ChatApp:
         # is packed last and only fills whatever remains between them.
         self.attach_button = ttk.Button(input_row, text="📎", width=3, command=self.attach_files)
         self.attach_button.pack(side=tk.LEFT, padx=(6, 0), pady=8)
+        ToolTip(self.attach_button, "Attach a text or code file to include with your message")
 
         self.action_button = ttk.Button(
             input_row, text="Send ➤", style="Accent.TButton", command=self.send_message
@@ -455,6 +508,8 @@ class ChatApp:
             padx=10,
             pady=8,
             insertbackground=theme.TEXT_PRIMARY,
+            selectbackground=theme.ACCENT,
+            selectforeground="#FFFFFF",
         )
         self.input.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.input.bind("<Return>", self._on_return)
@@ -489,6 +544,8 @@ class ChatApp:
             pady=14,
             spacing3=4,
             yscrollcommand=scrollbar.set,
+            selectbackground=theme.ACCENT,
+            selectforeground="#FFFFFF",
         )
         self.history.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.config(command=self.history.yview)
@@ -812,6 +869,7 @@ class ChatApp:
             device_row, text="Test Microphone", command=self.test_meeting_microphone
         )
         self.meeting_test_button.pack(side=tk.LEFT)
+        ToolTip(self.meeting_test_button, "Records 2.5 seconds and checks whether sound is detected")
 
         self._refresh_device_list()
 
@@ -881,6 +939,8 @@ class ChatApp:
             pady=12,
             font=(theme.FONT_FAMILY, 10),
             yscrollcommand=scrollbar.set,
+            selectbackground=theme.ACCENT,
+            selectforeground="#FFFFFF",
         )
         self.meeting_transcript.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.config(command=self.meeting_transcript.yview)
@@ -912,6 +972,8 @@ class ChatApp:
             pady=12,
             font=(theme.FONT_FAMILY, 10),
             yscrollcommand=summary_scrollbar.set,
+            selectbackground=theme.ACCENT,
+            selectforeground="#FFFFFF",
         )
         self.meeting_summary.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         summary_scrollbar.config(command=self.meeting_summary.yview)
@@ -1192,6 +1254,7 @@ class ChatApp:
             top_row, text="Browse...", command=self._pick_agent_project_folder
         )
         self.agent_browse_button.pack(side=tk.LEFT)
+        ToolTip(self.agent_browse_button, "Choose the folder the agent can read from and make changes to")
 
         mode_row = ttk.Frame(tab)
         mode_row.pack(fill=tk.X, padx=16, pady=(0, 12))
@@ -1203,10 +1266,18 @@ class ChatApp:
             mode_row, text="Planning (propose changes only)", value="planning", variable=self.agent_mode_var
         )
         self.agent_planning_radio.pack(side=tk.LEFT, padx=(10, 12))
+        ToolTip(
+            self.agent_planning_radio,
+            "The agent can explore and propose changes, but nothing is ever written to disk in this mode.",
+        )
         self.agent_auto_radio = ttk.Radiobutton(
             mode_row, text="Auto (executes, with approval)", value="auto", variable=self.agent_mode_var
         )
         self.agent_auto_radio.pack(side=tk.LEFT)
+        ToolTip(
+            self.agent_auto_radio,
+            "The agent can make real changes and run commands, but always pauses and asks before each one.",
+        )
 
         # Input area packed BOTTOM before the transcript (TOP, expand=True),
         # same reasoning as the chat tab's input_frame/history_frame ordering:
@@ -1231,6 +1302,8 @@ class ChatApp:
             padx=10,
             pady=8,
             insertbackground=theme.TEXT_PRIMARY,
+            selectbackground=theme.ACCENT,
+            selectforeground="#FFFFFF",
         )
         self.agent_input.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.agent_input.bind("<Return>", self._on_agent_return)
@@ -1261,6 +1334,8 @@ class ChatApp:
             pady=14,
             spacing3=4,
             yscrollcommand=scrollbar.set,
+            selectbackground=theme.ACCENT,
+            selectforeground="#FFFFFF",
         )
         self.agent_transcript.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.config(command=self.agent_transcript.yview)
@@ -1346,9 +1421,17 @@ class ChatApp:
             return
         self.agent_input.delete("1.0", tk.END)
 
-        self.agent_transcript.config(state=tk.NORMAL)
-        self.agent_transcript.delete("1.0", tk.END)
-        self.agent_transcript.config(state=tk.DISABLED)
+        is_new_session = self.agent_session is None or self.agent_session.project_root != self.agent_project_root
+        if is_new_session:
+            # Only clear the visible transcript when actually starting a new
+            # session (first message, or the project folder changed) - a
+            # follow-up message in an ongoing conversation should append, not
+            # wipe out everything said so far. AgentSession.messages already
+            # accumulates full history for the model regardless; this only
+            # affects what's shown on screen.
+            self.agent_transcript.config(state=tk.NORMAL)
+            self.agent_transcript.delete("1.0", tk.END)
+            self.agent_transcript.config(state=tk.DISABLED)
 
         self.agent_busy = True
         self._set_agent_controls_enabled(False)
@@ -1358,7 +1441,7 @@ class ChatApp:
         self._agent_append("You\n", "user_label")
         self._agent_append(instruction + "\n\n", ("user_bubble", "body"))
 
-        if self.agent_session is None or self.agent_session.project_root != self.agent_project_root:
+        if is_new_session:
             self.agent_session = agent.AgentSession(
                 self.root,
                 self.agent_project_root,
