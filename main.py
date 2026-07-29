@@ -310,6 +310,12 @@ class ChatApp:
         self.agent_project_root = None
         self.agent_pending_approval = None
 
+        # Set the mode before any widget is built, so initial construction
+        # already reads the right colors - _apply_theme() is only needed
+        # later, for re-coloring already-built widgets when the user toggles.
+        theme.set_mode(load_settings().get("dark_mode", False))
+        self.dark_mode_var = tk.BooleanVar(value=theme.is_dark)
+
         root.title(APP_TITLE)
         if not getattr(sys, "frozen", False):
             # In dev mode, set the icon explicitly; the packaged exe already
@@ -343,6 +349,62 @@ class ChatApp:
         file_menu = tk.Menu(menubar, tearoff=0)
         file_menu.add_command(label="Settings...", command=self.open_settings)
         menubar.add_cascade(label="File", menu=file_menu)
+
+        view_menu = tk.Menu(menubar, tearoff=0)
+        view_menu.add_checkbutton(
+            label="Dark Mode", variable=self.dark_mode_var, command=self._toggle_dark_mode
+        )
+        menubar.add_cascade(label="View", menu=view_menu)
+
+    def _toggle_dark_mode(self):
+        dark = self.dark_mode_var.get()
+        theme.set_mode(dark)
+        self._apply_theme()
+        settings = load_settings()
+        settings["dark_mode"] = dark
+        save_settings(settings)
+
+    def _apply_theme(self):
+        """Re-pushes the current theme.* colors into every already-built
+        widget. Only needed for the live dark-mode toggle - initial
+        construction already reads the right colors, since theme.set_mode()
+        runs before any widget exists (see __init__). ttk widgets update via
+        setup_style(); plain tk widgets (which don't participate in ttk
+        styling) are re-colored explicitly below."""
+        theme.setup_style(self.root)
+
+        self.root.configure(bg=theme.BG_APP)
+
+        self.header_frame.configure(bg=theme.BG_APP)
+        self.logo_canvas.configure(bg=theme.BG_APP)
+        self.logo_canvas.itemconfig(self.logo_oval_id, fill=theme.ACCENT)
+        self.title_frame.configure(bg=theme.BG_APP)
+        self.app_title_label.configure(bg=theme.BG_APP, fg=theme.TEXT_PRIMARY)
+        self.tagline_label.configure(bg=theme.BG_APP, fg=theme.TEXT_SECONDARY)
+
+        self.chat_input_frame.configure(bg=theme.BG_CARD, highlightbackground=theme.BORDER)
+        self.input.configure(
+            bg=theme.BG_CARD, fg=theme.TEXT_PRIMARY, insertbackground=theme.TEXT_PRIMARY, selectbackground=theme.ACCENT
+        )
+        self.chat_history_frame.configure(bg=theme.BG_CARD, highlightbackground=theme.BORDER)
+        self.history.configure(bg=theme.BG_CARD, fg=theme.TEXT_PRIMARY, selectbackground=theme.ACCENT)
+        self._configure_message_tags(self.history)
+
+        self.meeting_transcript_body.configure(bg=theme.BG_CARD, highlightbackground=theme.BORDER)
+        self.meeting_transcript.configure(bg=theme.BG_CARD, fg=theme.TEXT_PRIMARY, selectbackground=theme.ACCENT)
+        self.meeting_transcript.tag_configure("placeholder", foreground=theme.TEXT_SECONDARY)
+        self.meeting_summary_body.configure(bg=theme.SUCCESS_LIGHT, highlightbackground=theme.BORDER)
+        self.meeting_summary.configure(bg=theme.SUCCESS_LIGHT, fg=theme.TEXT_PRIMARY, selectbackground=theme.ACCENT)
+        self.meeting_summary.tag_configure("placeholder", foreground=theme.SUCCESS_TEXT)
+
+        self.agent_input_frame.configure(bg=theme.BG_CARD, highlightbackground=theme.BORDER)
+        self.agent_input.configure(
+            bg=theme.BG_CARD, fg=theme.TEXT_PRIMARY, insertbackground=theme.TEXT_PRIMARY, selectbackground=theme.ACCENT
+        )
+        self.agent_transcript_frame.configure(bg=theme.BG_CARD, highlightbackground=theme.BORDER)
+        self.agent_transcript.configure(bg=theme.BG_CARD, fg=theme.TEXT_PRIMARY, selectbackground=theme.ACCENT)
+        self._configure_message_tags(self.agent_transcript)
+        self._configure_agent_tags(self.agent_transcript)
 
     def open_settings(self):
         dialog = tk.Toplevel(self.root)
@@ -475,7 +537,10 @@ class ChatApp:
         # input box and toolbar always claim their full required space first
         # and only the scrollable history shrinks when the window gets small
         # - otherwise a tight window can squeeze the input box out of view.
-        input_frame = tk.Frame(main_area, bg=theme.BG_CARD, highlightbackground=theme.BORDER, highlightthickness=1)
+        self.chat_input_frame = tk.Frame(
+            main_area, bg=theme.BG_CARD, highlightbackground=theme.BORDER, highlightthickness=1
+        )
+        input_frame = self.chat_input_frame
         input_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=16, pady=12)
 
         self.attachments_row = ttk.Frame(input_frame)
@@ -527,7 +592,10 @@ class ChatApp:
         self.status_var = tk.StringVar(value="Enter to send, Shift+Enter for a new line")
         ttk.Label(toolbar, textvariable=self.status_var, style="Secondary.TLabel").pack(side=tk.RIGHT)
 
-        history_frame = tk.Frame(main_area, bg=theme.BG_CARD, highlightbackground=theme.BORDER, highlightthickness=1)
+        self.chat_history_frame = tk.Frame(
+            main_area, bg=theme.BG_CARD, highlightbackground=theme.BORDER, highlightthickness=1
+        )
+        history_frame = self.chat_history_frame
         history_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=16, pady=(0, 8))
 
         scrollbar = ttk.Scrollbar(history_frame)
@@ -552,27 +620,29 @@ class ChatApp:
         self._configure_message_tags(self.history)
 
     def _build_header(self, root):
-        header = tk.Frame(root, bg=theme.BG_APP, height=56)
-        header.pack(fill=tk.X)
-        header.pack_propagate(False)
+        self.header_frame = tk.Frame(root, bg=theme.BG_APP, height=56)
+        self.header_frame.pack(fill=tk.X)
+        self.header_frame.pack_propagate(False)
 
-        logo = tk.Canvas(header, width=34, height=34, bg=theme.BG_APP, highlightthickness=0)
-        logo.pack(side=tk.LEFT, padx=(18, 10), pady=11)
-        logo.create_oval(1, 1, 33, 33, fill=theme.ACCENT, outline="")
-        logo.create_text(17, 17, text="AI", fill="#FFFFFF", font=(theme.FONT_FAMILY, 11, "bold"))
+        self.logo_canvas = tk.Canvas(self.header_frame, width=34, height=34, bg=theme.BG_APP, highlightthickness=0)
+        self.logo_canvas.pack(side=tk.LEFT, padx=(18, 10), pady=11)
+        self.logo_oval_id = self.logo_canvas.create_oval(1, 1, 33, 33, fill=theme.ACCENT, outline="")
+        self.logo_canvas.create_text(17, 17, text="AI", fill="#FFFFFF", font=(theme.FONT_FAMILY, 11, "bold"))
 
-        title_frame = tk.Frame(header, bg=theme.BG_APP)
-        title_frame.pack(side=tk.LEFT, pady=6)
-        tk.Label(
-            title_frame, text=APP_TITLE, bg=theme.BG_APP, fg=theme.TEXT_PRIMARY, font=(theme.FONT_FAMILY, 13, "bold")
-        ).pack(anchor=tk.W)
-        tk.Label(
-            title_frame,
+        self.title_frame = tk.Frame(self.header_frame, bg=theme.BG_APP)
+        self.title_frame.pack(side=tk.LEFT, pady=6)
+        self.app_title_label = tk.Label(
+            self.title_frame, text=APP_TITLE, bg=theme.BG_APP, fg=theme.TEXT_PRIMARY, font=(theme.FONT_FAMILY, 13, "bold")
+        )
+        self.app_title_label.pack(anchor=tk.W)
+        self.tagline_label = tk.Label(
+            self.title_frame,
             text=f"{MODEL}  ·  running on lab hardware",
             bg=theme.BG_APP,
             fg=theme.TEXT_SECONDARY,
             font=(theme.FONT_FAMILY, 8),
-        ).pack(anchor=tk.W)
+        )
+        self.tagline_label.pack(anchor=tk.W)
 
         ttk.Separator(root, orient=tk.HORIZONTAL).pack(fill=tk.X)
 
@@ -920,9 +990,10 @@ class ChatApp:
         ttk.Label(transcript_frame, text="TRANSCRIPT", style="SectionTitle.TLabel").pack(
             fill=tk.X, pady=(0, 4)
         )
-        transcript_body = tk.Frame(
+        self.meeting_transcript_body = tk.Frame(
             transcript_frame, bg=theme.BG_CARD, highlightbackground=theme.BORDER, highlightthickness=1
         )
+        transcript_body = self.meeting_transcript_body
         transcript_body.pack(fill=tk.BOTH, expand=True)
 
         scrollbar = ttk.Scrollbar(transcript_body)
@@ -953,9 +1024,10 @@ class ChatApp:
         paned.add(summary_frame, weight=2)
 
         ttk.Label(summary_frame, text="SUMMARY", style="SectionTitle.TLabel").pack(fill=tk.X, pady=(8, 4))
-        summary_body = tk.Frame(
+        self.meeting_summary_body = tk.Frame(
             summary_frame, bg=theme.SUCCESS_LIGHT, highlightbackground=theme.BORDER, highlightthickness=1
         )
+        summary_body = self.meeting_summary_body
         summary_body.pack(fill=tk.BOTH, expand=True)
 
         summary_scrollbar = ttk.Scrollbar(summary_body)
@@ -1283,7 +1355,8 @@ class ChatApp:
         # same reasoning as the chat tab's input_frame/history_frame ordering:
         # a fixed-size widget packed after an expanding sibling can get
         # squeezed out of view entirely at small window sizes.
-        input_frame = tk.Frame(tab, bg=theme.BG_CARD, highlightbackground=theme.BORDER, highlightthickness=1)
+        self.agent_input_frame = tk.Frame(tab, bg=theme.BG_CARD, highlightbackground=theme.BORDER, highlightthickness=1)
+        input_frame = self.agent_input_frame
         input_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=16, pady=(8, 16))
 
         self.agent_send_button = ttk.Button(
@@ -1315,9 +1388,10 @@ class ChatApp:
             side=tk.RIGHT, pady=(0, 4)
         )
 
-        transcript_frame = tk.Frame(
+        self.agent_transcript_frame = tk.Frame(
             tab, bg=theme.BG_CARD, highlightbackground=theme.BORDER, highlightthickness=1
         )
+        transcript_frame = self.agent_transcript_frame
         transcript_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=16, pady=(0, 8))
 
         scrollbar = ttk.Scrollbar(transcript_frame)

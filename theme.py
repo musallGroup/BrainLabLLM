@@ -1,43 +1,105 @@
-"""Centralized color palette and ttk style setup for a modern, colorful look."""
+"""Centralized color palette and ttk style setup for a modern, colorful look.
+
+Supports a live-switchable light/dark palette: module-level color names
+(BG_APP, TEXT_PRIMARY, etc.) are mutable globals reassigned by set_mode(),
+not fixed constants - main.py's widget-construction code reads them exactly
+as before, and ChatApp._apply_theme() re-pushes the current values into
+already-built widgets after a toggle. The sidebar stays visually similar
+across both modes (it's already a dark panel by design in this app), so
+only BG_SIDEBAR_* / TEXT_ON_DARK_* are shared between the two palettes.
+"""
 
 from tkinter import ttk
 
-BG_APP = "#F5F6FA"
+FONT_FAMILY = "Segoe UI"
+FONT_MONO = "Consolas"
+
+# Shared across both modes - the sidebar is always a dark panel regardless
+# of overall app light/dark mode, so it doesn't need two variants.
 BG_SIDEBAR = "#1E1B2E"
 BG_SIDEBAR_ITEM_HOVER = "#2A2640"
 BG_SIDEBAR_ITEM_SELECTED = "#342F55"
-BG_CARD = "#FFFFFF"
-BORDER = "#E3E5EC"
-
-TEXT_PRIMARY = "#1A1D29"
-TEXT_SECONDARY = "#6B7080"
 TEXT_ON_DARK = "#E8E9F3"
 TEXT_ON_DARK_MUTED = "#9391AC"
+GHOST_BORDER = "#3A3656"
 
-ACCENT = "#6C5CE7"
-ACCENT_HOVER = "#5A4BD4"
-ACCENT_LIGHT = "#EEEBFF"
-ACCENT_TEXT = "#4B3FC4"
+_LIGHT = {
+    "BG_APP": "#F5F6FA",
+    "BG_CARD": "#FFFFFF",
+    "BORDER": "#E3E5EC",
+    "TEXT_PRIMARY": "#1A1D29",
+    "TEXT_SECONDARY": "#6B7080",
+    "TEXT_DISABLED": "#B5B8C4",
+    "ACCENT": "#6C5CE7",
+    "ACCENT_HOVER": "#5A4BD4",
+    "ACCENT_LIGHT": "#EEEBFF",
+    "ACCENT_TEXT": "#4B3FC4",
+    "ACCENT_DISABLED_BG": "#D3CDF7",
+    "SUCCESS": "#00B894",
+    "SUCCESS_LIGHT": "#E4F9F3",
+    "SUCCESS_TEXT": "#087F5B",
+    "DANGER": "#EB4D6B",
+    "DANGER_HOVER": "#D43958",
+    "DANGER_LIGHT": "#FDEAEE",
+    "DANGER_TEXT": "#C22B49",
+    "DANGER_DISABLED_BG": "#F5C2CD",
+    "WARNING": "#FDA23A",
+    "WARNING_LIGHT": "#FFF3E1",
+    "CODE_BG": "#282A3A",
+    "CODE_TEXT": "#E8E9F3",
+    "INLINE_CODE_BG": "#EEF0F5",
+    "INLINE_CODE_TEXT": "#B8306B",
+    "BUTTON_ACTIVE_BG": "#EFF0F5",
+    "BUTTON_DISABLED_BG": "#F5F6FA",
+}
 
-SUCCESS = "#00B894"
-SUCCESS_LIGHT = "#E4F9F3"
-SUCCESS_TEXT = "#087F5B"
+_DARK = {
+    "BG_APP": "#15131F",
+    "BG_CARD": "#1E1B2E",
+    "BORDER": "#332F4A",
+    "TEXT_PRIMARY": "#EDEDF5",
+    "TEXT_SECONDARY": "#9B98B5",
+    "TEXT_DISABLED": "#5A5770",
+    "ACCENT": "#8B7CF6",
+    "ACCENT_HOVER": "#9D8FF7",
+    "ACCENT_LIGHT": "#2E2A4A",
+    "ACCENT_TEXT": "#B8ADFA",
+    "ACCENT_DISABLED_BG": "#453D6B",
+    "SUCCESS": "#2DD4A8",
+    "SUCCESS_LIGHT": "#1B3B34",
+    "SUCCESS_TEXT": "#5EEAC5",
+    "DANGER": "#F26E89",
+    "DANGER_HOVER": "#F58AA0",
+    "DANGER_LIGHT": "#3B2029",
+    "DANGER_TEXT": "#F7A3B5",
+    "DANGER_DISABLED_BG": "#4A2830",
+    "WARNING": "#FDB25C",
+    "WARNING_LIGHT": "#3B2E17",
+    "CODE_BG": "#0F0D18",
+    "CODE_TEXT": "#E8E9F3",
+    "INLINE_CODE_BG": "#2E2A4A",
+    "INLINE_CODE_TEXT": "#F0A8C8",
+    "BUTTON_ACTIVE_BG": "#282440",
+    "BUTTON_DISABLED_BG": "#1A1826",
+}
 
-DANGER = "#EB4D6B"
-DANGER_HOVER = "#D43958"
-DANGER_LIGHT = "#FDEAEE"
-DANGER_TEXT = "#C22B49"
+is_dark = False
 
-WARNING = "#FDA23A"
-WARNING_LIGHT = "#FFF3E1"
 
-CODE_BG = "#282A3A"
-CODE_TEXT = "#E8E9F3"
-INLINE_CODE_BG = "#EEF0F5"
-INLINE_CODE_TEXT = "#B8306B"
+def _install(palette):
+    globals().update(palette)
 
-FONT_FAMILY = "Segoe UI"
-FONT_MONO = "Consolas"
+
+_install(_LIGHT)
+
+
+def set_mode(dark):
+    """Switches the module-level color names to the light or dark palette.
+    Does not touch any already-built widget - callers must re-apply colors
+    to existing widgets themselves (see ChatApp._apply_theme)."""
+    global is_dark
+    is_dark = dark
+    _install(_DARK if dark else _LIGHT)
 
 
 def setup_style(root):
@@ -70,8 +132,8 @@ def setup_style(root):
     )
     style.map(
         "TButton",
-        background=[("active", "#EFF0F5"), ("disabled", "#F5F6FA")],
-        foreground=[("disabled", "#B5B8C4")],
+        background=[("active", BUTTON_ACTIVE_BG), ("disabled", BUTTON_DISABLED_BG)],
+        foreground=[("disabled", TEXT_DISABLED)],
     )
 
     style.configure(
@@ -84,7 +146,7 @@ def setup_style(root):
     )
     style.map(
         "Accent.TButton",
-        background=[("active", ACCENT_HOVER), ("disabled", "#D3CDF7")],
+        background=[("active", ACCENT_HOVER), ("disabled", ACCENT_DISABLED_BG)],
         foreground=[("disabled", "#FFFFFF")],
     )
 
@@ -98,7 +160,7 @@ def setup_style(root):
     )
     style.map(
         "Danger.TButton",
-        background=[("active", DANGER_HOVER), ("disabled", "#F5C2CD")],
+        background=[("active", DANGER_HOVER), ("disabled", DANGER_DISABLED_BG)],
         foreground=[("disabled", "#FFFFFF")],
     )
 
@@ -107,7 +169,7 @@ def setup_style(root):
         background=BG_SIDEBAR,
         foreground=TEXT_ON_DARK,
         borderwidth=1,
-        bordercolor="#3A3656",
+        bordercolor=GHOST_BORDER,
         relief="flat",
         padding=(10, 7),
         font=(FONT_FAMILY, 9),
@@ -145,6 +207,7 @@ def setup_style(root):
     style.configure("TSeparator", background=BORDER)
 
     style.configure("TCheckbutton", background=BG_APP, foreground=TEXT_PRIMARY)
+    style.configure("TRadiobutton", background=BG_APP, foreground=TEXT_PRIMARY)
     style.configure("TProgressbar", background=ACCENT, troughcolor=BG_APP, bordercolor=BG_APP)
 
     return style
