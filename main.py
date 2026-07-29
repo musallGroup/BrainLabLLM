@@ -664,7 +664,7 @@ class ChatApp:
         )
         widget.tag_configure(
             "assistant_bubble",
-            background="#F0F1F6",
+            background=theme.BUBBLE_ASSISTANT_BG,
             font=(theme.FONT_FAMILY, 10),
             lmargin1=4,
             lmargin2=4,
@@ -698,6 +698,12 @@ class ChatApp:
         widget.tag_raise("code_block")
         widget.tag_raise("bold")
         widget.tag_raise("error")
+        # The built-in selection tag must outrank all of the above, or
+        # selecting text that overlaps a colored tag (a code span, bold text,
+        # an error line) renders with that tag's colors instead of the
+        # selection highlight - text can look unselected/invisible even
+        # though it's actually selected and will still copy correctly.
+        widget.tag_raise("sel")
 
     def _on_return(self, event):
         if event.state & 0x1:
@@ -1446,6 +1452,11 @@ class ChatApp:
         widget.tag_configure(
             "approval_banner", background=theme.WARNING_LIGHT, font=(theme.FONT_FAMILY, 9, "bold")
         )
+        # Newly-configured tags default to the highest priority, which would
+        # re-bury "sel" again after _configure_message_tags already raised it
+        # (this method always runs right after that one, on the same
+        # widget) - so it needs raising again here too.
+        widget.tag_raise("sel")
 
     def _pick_agent_project_folder(self):
         chosen = filedialog.askdirectory(title="Choose a project folder for the agent")

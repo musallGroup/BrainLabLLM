@@ -26,6 +26,7 @@ GHOST_BORDER = "#3A3656"
 _LIGHT = {
     "BG_APP": "#F5F6FA",
     "BG_CARD": "#FFFFFF",
+    "BUBBLE_ASSISTANT_BG": "#F0F1F6",
     "BORDER": "#E3E5EC",
     "TEXT_PRIMARY": "#1A1D29",
     "TEXT_SECONDARY": "#6B7080",
@@ -56,6 +57,7 @@ _LIGHT = {
 _DARK = {
     "BG_APP": "#15131F",
     "BG_CARD": "#1E1B2E",
+    "BUBBLE_ASSISTANT_BG": "#282540",
     "BORDER": "#332F4A",
     "TEXT_PRIMARY": "#EDEDF5",
     "TEXT_SECONDARY": "#9B98B5",
