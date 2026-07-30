@@ -12,6 +12,7 @@ from tkinter import messagebox, ttk
 import requests
 
 import agent
+import diarization
 import meeting
 import theme
 
@@ -98,6 +99,7 @@ MAX_ATTACHMENT_BYTES = 200_000  # ~200KB per file - generous for code/text, avoi
 
 CODE_BLOCK_RE = re.compile(r"```[a-zA-Z0-9_+-]*\n?(.*?)```", re.DOTALL)
 INLINE_RE = re.compile(r"`([^`\n]+)`|\*\*([^*]+)\*\*")
+SPEAKER_LINE_RE = re.compile(r"^(Speaker \d+|Unknown): (.*)$")
 
 
 def friendly_error_message(exc):
@@ -170,7 +172,8 @@ def summarize_transcript(transcript, should_stop=None, on_progress=None):
                     "content": (
                         "Summarize this excerpt from a meeting transcript into a compact list "
                         "of bullet points capturing key statements, decisions, and action items. "
-                        "Be concise.\n\n" + chunk
+                        "Be concise. If the transcript is labeled by speaker (e.g. 'Speaker 1:'), "
+                        "keep track of who said what.\n\n" + chunk
                     ),
                 }
             ]
@@ -188,7 +191,9 @@ def summarize_transcript(transcript, should_stop=None, on_progress=None):
                 "Based on these meeting notes, produce a structured summary with three "
                 "sections: 'Key Points', 'Decisions', and 'Action Items'. Use markdown bullet "
                 "points under each heading. If a section has nothing relevant, write "
-                "'None noted.' under it.\n\n" + combined
+                "'None noted.' under it. Only attribute a decision or action item to a specific "
+                "speaker (e.g. 'Speaker 1') if the notes below explicitly name that speaker - "
+                "never invent a speaker attribution that isn't already there.\n\n" + combined
             ),
         }
     ]
@@ -394,6 +399,7 @@ class ChatApp:
         self.meeting_transcript_body.configure(bg=theme.BG_CARD, highlightbackground=theme.BORDER)
         self.meeting_transcript.configure(bg=theme.BG_CARD, fg=theme.TEXT_PRIMARY, selectbackground=theme.ACCENT)
         self.meeting_transcript.tag_configure("placeholder", foreground=theme.TEXT_SECONDARY)
+        self._configure_speaker_tags(self.meeting_transcript)
         self.meeting_summary_body.configure(bg=theme.SUCCESS_LIGHT, highlightbackground=theme.BORDER)
         self.meeting_summary.configure(bg=theme.SUCCESS_LIGHT, fg=theme.TEXT_PRIMARY, selectbackground=theme.ACCENT)
         self.meeting_summary.tag_configure("placeholder", foreground=theme.SUCCESS_TEXT)
@@ -964,6 +970,20 @@ class ChatApp:
         self.meeting_file_button.pack(side=tk.LEFT, padx=(6, 0))
         ToolTip(self.meeting_file_button, "Transcribe an existing audio or video recording instead of recording live")
 
+        # Disabled until the (async, since torch import isn't instant) GPU
+        # check resolves - speaker identification is GPU-only, see
+        # docs/architecture.md#speaker-diarization for why.
+        self.meeting_identify_speakers_var = tk.BooleanVar(value=False)
+        self._speaker_id_gpu_ok = False
+        self.meeting_identify_speakers_check = ttk.Checkbutton(
+            toolbar, text="🗣  Identify speakers", variable=self.meeting_identify_speakers_var, state=tk.DISABLED
+        )
+        self.meeting_identify_speakers_check.pack(side=tk.LEFT, padx=(16, 0))
+        self.meeting_identify_speakers_tooltip = ToolTip(
+            self.meeting_identify_speakers_check, "Checking GPU availability..."
+        )
+        threading.Thread(target=self._check_speaker_id_gpu, daemon=True).start()
+
         self.meeting_timer_var = tk.StringVar(value="00:00")
         ttk.Label(toolbar, textvariable=self.meeting_timer_var, font=(theme.FONT_FAMILY, 12, "bold")).pack(
             side=tk.LEFT, padx=(14, 0)
@@ -1029,6 +1049,7 @@ class ChatApp:
         self.meeting_transcript.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.config(command=self.meeting_transcript.yview)
         self.meeting_transcript.tag_configure("placeholder", foreground=theme.TEXT_SECONDARY)
+        self._configure_speaker_tags(self.meeting_transcript)
         self.meeting_transcript.config(state=tk.NORMAL)
         self.meeting_transcript.insert(tk.END, "🎙  No recording yet — click Record to start.", "placeholder")
         self.meeting_transcript.config(state=tk.DISABLED)
@@ -1066,6 +1087,31 @@ class ChatApp:
         self.meeting_summary.config(state=tk.NORMAL)
         self.meeting_summary.insert(tk.END, "✨  Your summary will appear here after recording.", "placeholder")
         self.meeting_summary.config(state=tk.DISABLED)
+
+    def _check_speaker_id_gpu(self):
+        gpu_ok = diarization.gpu_available()
+        self.root.after(0, self._on_speaker_id_gpu_checked, gpu_ok)
+
+    def _on_speaker_id_gpu_checked(self, gpu_ok):
+        self._speaker_id_gpu_ok = gpu_ok
+        if gpu_ok:
+            self.meeting_identify_speakers_tooltip.text = (
+                "Labels who's speaking in the transcript (e.g. \"Speaker 1: ...\")."
+            )
+        else:
+            self.meeting_identify_speakers_tooltip.text = (
+                "Requires a GPU, which wasn't detected on this machine - speaker identification is unavailable."
+            )
+        self._update_speaker_id_checkbox_state()
+
+    def _update_speaker_id_checkbox_state(self):
+        # Enabled only when the GPU check succeeded AND nothing else is
+        # using the meeting session right now - mirrors meeting_button's own
+        # busy-state gating, checked separately since GPU availability is a
+        # one-time fact but busy state changes per operation.
+        busy = self.meeting_recording or self.meeting_file_busy
+        state = tk.NORMAL if (self._speaker_id_gpu_ok and not busy) else tk.DISABLED
+        self.meeting_identify_speakers_check.config(state=state)
 
     def _refresh_device_list(self):
         devices = meeting.list_input_devices()
@@ -1158,8 +1204,10 @@ class ChatApp:
         self.meeting_status_var.set("Loading model...")
         self.meeting_button.config(state=tk.DISABLED)
         self.meeting_file_button.config(state=tk.DISABLED)
+        self.meeting_identify_speakers_check.config(state=tk.DISABLED)
         self.meeting_device_combo.config(state=tk.DISABLED)
         self.meeting_test_button.config(state=tk.DISABLED)
+        identify_speakers = self.meeting_identify_speakers_var.get()
 
         self.meeting_session = meeting.MeetingSession(
             self.root,
@@ -1173,7 +1221,7 @@ class ChatApp:
             on_recording_failed=lambda: self.root.after(0, self._on_meeting_start_failed),
             on_error=lambda msg: self.root.after(0, self._on_meeting_error, msg),
         )
-        self.meeting_session.start()
+        self.meeting_session.start(identify_speakers=identify_speakers)
 
     def _reset_meeting_panels(self):
         self.meeting_transcript.config(state=tk.NORMAL)
@@ -1210,9 +1258,11 @@ class ChatApp:
         self.meeting_file_busy = True
         self.meeting_button.config(state=tk.DISABLED)
         self.meeting_file_button.config(state=tk.DISABLED)
+        self.meeting_identify_speakers_check.config(state=tk.DISABLED)
         self.meeting_device_combo.config(state=tk.DISABLED)
         self.meeting_test_button.config(state=tk.DISABLED)
         self.meeting_status_var.set("Loading model...")
+        identify_speakers = self.meeting_identify_speakers_var.get()
 
         if self.meeting_session is None:
             device = self._get_selected_device_index()
@@ -1228,7 +1278,7 @@ class ChatApp:
                 on_recording_failed=lambda: self.root.after(0, self._on_meeting_start_failed),
                 on_error=lambda msg: self.root.after(0, self._on_meeting_error, msg),
             )
-        self.meeting_session.transcribe_file(path)
+        self.meeting_session.transcribe_file(path, identify_speakers=identify_speakers)
 
     def _on_meeting_started(self):
         self.meeting_recording = True
@@ -1239,6 +1289,7 @@ class ChatApp:
     def _on_meeting_start_failed(self):
         self.meeting_button.config(text="●  Record", style="Accent.TButton", state=tk.NORMAL)
         self.meeting_file_button.config(state=tk.NORMAL)
+        self._update_speaker_id_checkbox_state()
         self.meeting_device_combo.config(state="readonly")
         self.meeting_test_button.config(state=tk.NORMAL)
 
@@ -1272,11 +1323,15 @@ class ChatApp:
         self.meeting_transcript_text = text
         self.meeting_transcript.config(state=tk.NORMAL)
         self.meeting_transcript.delete("1.0", tk.END)
-        self.meeting_transcript.insert(tk.END, text if text else "(no speech detected)")
+        if text:
+            self._insert_speaker_labeled_text(self.meeting_transcript, text)
+        else:
+            self.meeting_transcript.insert(tk.END, "(no speech detected)")
         self.meeting_transcript.config(state=tk.DISABLED)
         self.meeting_file_busy = False
         self.meeting_button.config(state=tk.NORMAL)
         self.meeting_file_button.config(state=tk.NORMAL)
+        self._update_speaker_id_checkbox_state()
         self.meeting_device_combo.config(state="readonly")
         self.meeting_test_button.config(state=tk.NORMAL)
         if text:
@@ -1300,6 +1355,7 @@ class ChatApp:
             self._meeting_timer_job = None
         self.meeting_button.config(text="●  Record", style="Accent.TButton", state=tk.NORMAL)
         self.meeting_file_button.config(state=tk.NORMAL)
+        self._update_speaker_id_checkbox_state()
         self.meeting_device_combo.config(state="readonly")
         self.meeting_test_button.config(state=tk.NORMAL)
 
@@ -1530,6 +1586,38 @@ class ChatApp:
         # (this method always runs right after that one, on the same
         # widget) - so it needs raising again here too.
         widget.tag_raise("sel")
+
+    def _configure_speaker_tags(self, widget):
+        # Reuses the app's existing accent/status colors rather than adding
+        # a dedicated palette - they're already mode-aware (see theme.py's
+        # light/dark dicts), so this gets dark mode support for free.
+        palette = [theme.ACCENT_TEXT, theme.SUCCESS_TEXT, theme.DANGER_TEXT, theme.WARNING]
+        for i, color in enumerate(palette, start=1):
+            widget.tag_configure(f"speaker_{i}", foreground=color, font=(theme.FONT_FAMILY, 10, "bold"))
+        widget.tag_configure("speaker_unknown", foreground=theme.TEXT_SECONDARY, font=(theme.FONT_FAMILY, 10, "bold"))
+
+    def _speaker_tag_for_label(self, label):
+        match = re.match(r"Speaker (\d+)", label)
+        if not match:
+            return "speaker_unknown"
+        n = int(match.group(1))
+        return f"speaker_{((n - 1) % 4) + 1}"
+
+    def _insert_speaker_labeled_text(self, widget, text):
+        """Renders "Speaker N: ..." lines (as produced by
+        diarization.format_speaker_transcript) with a distinct color per
+        speaker. Lines that don't match the pattern (plain, non-diarized
+        transcripts) are inserted as-is - this is the same widget/insert
+        path either way, just conditionally tagged."""
+        for line in text.split("\n"):
+            match = SPEAKER_LINE_RE.match(line)
+            if match:
+                label, body = match.group(1), match.group(2)
+                tag = self._speaker_tag_for_label(label)
+                widget.insert(tk.END, f"{label}: ", tag)
+                widget.insert(tk.END, body + "\n")
+            else:
+                widget.insert(tk.END, line + "\n")
 
     def _pick_agent_project_folder(self):
         chosen = filedialog.askdirectory(title="Choose a project folder for the agent")

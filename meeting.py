@@ -9,6 +9,8 @@ import sounddevice as sd
 from faster_whisper import WhisperModel
 from scipy.signal import resample_poly
 
+import diarization
+
 TARGET_RATE = 16000
 
 
@@ -177,6 +179,7 @@ class MeetingSession:
         self._blocks = []
         self._capture_thread = None
         self._stop_capture = threading.Event()
+        self._identify_speakers = False
 
         self.model = None
         self.device_used = None
@@ -225,7 +228,42 @@ class MeetingSession:
         self.model = WhisperModel(model_path, device="cpu", compute_type="int8")
         self.device_used = "cpu"
 
-    def start(self):
+    def _transcribe_with_optional_diarization(self, audio, identify_speakers, token):
+        """audio: numpy array (live recording) or file path (transcribe_file)
+        - faster-whisper's transcribe() and diarization.diarize() both accept
+        either. Shared by stop() and transcribe_file() so the diarization-merge
+        and graceful-fallback logic isn't duplicated between them.
+
+        A diarization failure deliberately does NOT raise - unlike a
+        transcription failure, there's still a perfectly good plain
+        transcript to show, so this degrades to that rather than losing the
+        whole result over an enhancement that didn't work out.
+        """
+        segments, info = self.model.transcribe(audio, beam_size=5, vad_filter=True)
+        segments = list(segments)
+        plain_text = " ".join(s.text.strip() for s in segments)
+
+        if not identify_speakers:
+            return plain_text
+
+        self.root.after(0, self._handle_status, token, "Identifying speakers...")
+        try:
+            turns = diarization.diarize(
+                audio, on_status=lambda msg: self.root.after(0, self._handle_status, token, msg)
+            )
+            labeled = diarization.assign_speakers_to_segments(segments, turns)
+            return diarization.format_speaker_transcript(labeled)
+        except Exception as exc:
+            self.root.after(
+                0,
+                self._handle_status,
+                token,
+                f"Speaker identification failed, showing plain transcript ({exc})",
+            )
+            return plain_text
+
+    def start(self, identify_speakers=False):
+        self._identify_speakers = identify_speakers
         self.recording_token += 1
         token = self.recording_token
         self._stop_capture.clear()
@@ -283,6 +321,7 @@ class MeetingSession:
             return
 
         audio = np.concatenate(blocks)
+        identify_speakers = self._identify_speakers
 
         def transcribe():
             self.root.after(0, self._handle_status, token, "Transcribing...")
@@ -294,8 +333,7 @@ class MeetingSession:
             if token != self.recording_token:
                 return
             try:
-                segments, info = self.model.transcribe(audio, beam_size=5, vad_filter=True)
-                text = " ".join(s.text.strip() for s in segments)
+                text = self._transcribe_with_optional_diarization(audio, identify_speakers, token)
             except Exception as exc:
                 self.root.after(0, self._handle_error, token, f"Transcription failed: {exc}")
                 return
@@ -304,7 +342,7 @@ class MeetingSession:
 
         threading.Thread(target=transcribe, daemon=True).start()
 
-    def transcribe_file(self, path):
+    def transcribe_file(self, path, identify_speakers=False):
         """Transcribes an existing audio/video file rather than a live
         recording - reuses the same model (loading it with the same
         GPU/CPU fallback if not already loaded) and the same
@@ -332,8 +370,7 @@ class MeetingSession:
                 return
             self.root.after(0, self._handle_status, token, f"Transcribing {filename}...")
             try:
-                segments, info = self.model.transcribe(path, beam_size=5, vad_filter=True)
-                text = " ".join(s.text.strip() for s in segments)
+                text = self._transcribe_with_optional_diarization(path, identify_speakers, token)
             except Exception as exc:
                 self.root.after(0, self._handle_error, token, f"Transcription failed: {exc}")
                 return
