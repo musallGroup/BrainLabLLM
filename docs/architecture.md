@@ -35,6 +35,7 @@ flowchart LR
 | `meeting.py` | Everything audio: device enumeration, recording (`AudioRecorder`), and the record-then-transcribe orchestrator (`MeetingSession`). No UI code and no dependency on `main.py`. |
 | `theme.py` | Centralized color palette and `ttk.Style` configuration — the single source of truth for the app's visual design. |
 | `agent.py` | The coding-agent tool-calling loop (`AgentSession`), its tools (read/list/search/write/edit/run-shell), and the path-scoping security boundary (`resolve_scoped_path`). No UI code and no dependency on `main.py`, same as `meeting.py`. |
+| `diarization.py` | Speaker identification (`diarize`, `assign_speakers_to_segments`) — a separate model layered on top of, not replacing, `meeting.py`'s transcription. No UI code and no dependency on `main.py` or `meeting.py`. |
 | `installer.py` | A minimal, dependency-free Tkinter installer GUI, built separately from the main app (see [Packaging](development/packaging.md)). |
 
 ## Why batch transcription, not live { #why-batch-transcription }
@@ -51,6 +52,20 @@ Tuning the VAD (longer silence thresholds, a debounce requiring sustained signal
 **The fix was architectural, not a bigger tuning pass**: record the entire meeting as one continuous buffer, and transcribe it *once*, using `faster-whisper`'s own built-in VAD filtering (`vad_filter=True`, backed by Silero VAD internally) — which is more sophisticated than the hand-rolled version, and critically, has the *entire recording's context* available when deciding where sentence boundaries actually are, rather than making that call in real time from a small rolling window.
 
 The trade-off is explicit: no incremental transcript while recording, in exchange for a transcript that's reliably coherent. For meeting notes, that's the right trade.
+
+## Speaker diarization: GPU-only, layered on top { #speaker-diarization }
+
+"Identify speakers" is a second, independent model (`diarization.py`, `pyannote.audio`) layered on top of `faster-whisper`'s transcript, not a replacement for it — Whisper still does the actual speech-to-text; diarization only answers *who* was talking *when*, and the two results are merged afterward by overlapping their timestamps.
+
+**Model choice: `pyannote/speaker-diarization-community-1`, not `-3.1`.** The more commonly-referenced `-3.1` pipeline additionally depends on a separately-gated `pyannote/segmentation-3.0` model — two Hugging Face license acceptances instead of one. The community pipeline needs only itself, has better published accuracy, and ships under an explicit CC-BY-4.0 license. Fewer gated dependencies for whoever builds this app from source, for no accuracy cost — better on every axis that mattered here.
+
+**GPU-only, with no CPU fallback.** Unlike Whisper transcription — which already has a proven, acceptable CPU path used throughout this app — real-world CPU performance for pyannote is genuinely unpredictable across unknown lab hardware; published benchmarks and real-world reports for this class of model disagree by an order of magnitude depending on hardware. Rather than risk a lab machine hanging for minutes on what looks like a hung app, the checkbox (`meeting_identify_speakers_check` in `main.py`) starts disabled and only enables once a background-thread check (`diarization.gpu_available()`, a lazy `torch.cuda.is_available()`) confirms a usable GPU exists. This mirrors the generation-token/`root.after(0, ...)` pattern described above: the check never blocks Meeting-tab construction.
+
+**The torchcodec workaround.** pyannote's own file-path audio loading depends on `torchcodec`, which fails to load its native DLL in this environment (a PyTorch/torchcodec build mismatch, the same category of Windows DLL friction already documented in [Packaging](development/packaging.md) for other ML dependencies). Rather than chase that DLL, `diarize()` always feeds pyannote pre-decoded audio as a `{"waveform": tensor, "sample_rate": ...}` dict — reusing `faster_whisper.audio.decode_audio()`, a dependency this app already has a working relationship with, instead of adding a second audio-decoding path. This is pyannote's own documented workaround for the same issue, not a workaround invented for this app specifically.
+
+**Failure is graceful, not fatal.** A transcription failure is a hard error (`MeetingSession.on_error`) — there's no usable output without it. A diarization failure is different: `_transcribe_with_optional_diarization()` catches any exception from the diarization step and falls back to the plain, unlabeled transcript, surfacing only a status message. Losing speaker labels on an otherwise-successful transcription shouldn't cost the user their meeting notes.
+
+**Segment-to-speaker alignment picks the best overlap, not the first match.** `assign_speakers_to_segments()` compares each Whisper segment against every diarization turn and assigns whichever turn overlaps it *most*, not whichever comes first — a segment spanning a speaker change is common (Whisper and pyannote don't segment identically), and majority overlap is a better signal than segment order. Consecutive segments assigned to the same speaker are merged into one line, so one person's several short Whisper segments don't produce a wall of repeated labels. A segment with no overlapping turn at all (silence, an edge case near a boundary) is labeled "Unknown" rather than guessed.
 
 ## Summarization: map-reduce, not refine { #summarization }
 
