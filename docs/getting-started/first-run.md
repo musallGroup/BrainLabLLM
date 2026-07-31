@@ -19,3 +19,5 @@ Open **File → Settings** and click **Test Connection**. If it fails, you're mo
 ## GPU or CPU?
 
 If your machine has a supported NVIDIA GPU, the app uses it automatically for much faster transcription (a few seconds instead of tens of seconds for a short recording). This is fully automatic — after your first recording completes, look for the **Whisper: GPU** or **Whisper: CPU** label next to the Record button to see which one was used. There's nothing to configure unless you want to force one or the other; see [Configuration](../configuration.md#whisper_device).
+
+Transcription itself works fine on CPU. **Identifying speakers is different: it requires a GPU, with no CPU fallback.** The **🗣 Identify speakers** checkbox on the Meeting tab is disabled automatically on machines without one — see [Identifying speakers](../user-guide/meetings.md#identifying-speakers).

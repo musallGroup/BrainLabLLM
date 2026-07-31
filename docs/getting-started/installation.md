@@ -4,7 +4,7 @@ No coding experience, Python, or command-line use is required. This takes about 
 
 ## 1. Get the installer package
 
-Ask whoever manages the tool for your lab for `BrainLabLLM_Setup_Package.zip` (it's typically shared over the lab network or a shared drive — it's roughly 1.5 GB, since it includes the speech-to-text model so you don't need internet access later).
+Ask whoever manages the tool for your lab for `BrainLabLLM_Setup_Package.zip` (it's typically shared over the lab network or a shared drive — it's roughly 4.5 GB, since it includes the speech-to-text model and the (optional, GPU-only) speaker-identification model so you don't need internet access later).
 
 ## 2. Unzip it
 
@@ -33,7 +33,7 @@ You'll see a small setup window:
 - Leave **Create a Desktop shortcut** and **Launch after installing** checked (recommended)
 - Click **Install**
 
-A progress bar copies the app (this takes a few seconds to a minute depending on your disk), then shortcuts appear on your Desktop and in the Start Menu.
+A progress bar copies the app (this takes a few minutes, mostly depending on your disk — the speaker-identification model alone is a few gigabytes), then shortcuts appear on your Desktop and in the Start Menu.
 
 ## 4. That's it
 

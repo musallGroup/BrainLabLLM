@@ -26,6 +26,14 @@ An earlier version of this app showed the transcript incrementally while recordi
 
 Recording the whole thing and transcribing it in one pass — using the speech model's own, more sophisticated internal segmentation — turned out to be dramatically more reliable, at the cost of not seeing text appear while you talk. For meeting notes, accuracy matters more than a live readout, so that's the trade-off this app makes. See [Architecture](../architecture.md#why-batch-transcription) for the full story.
 
+## Identifying speakers
+
+Check **🗣 Identify speakers** before you record or transcribe a file to label who's talking in the transcript ("Speaker 1: ...", "Speaker 2: ...") and give each speaker their own color, both in the Transcript panel and in the summary. Labels are generic and numbered by whoever spoke first — this doesn't identify anyone by name.
+
+This needs a GPU. If none is detected on your machine, the checkbox is disabled with a tooltip explaining why; leave it unchecked and everything else, including summarization, works exactly as it does today. See [Architecture](../architecture.md#speaker-diarization) for why this feature doesn't have a CPU fallback the way transcription itself does.
+
+If speaker identification fails partway through for any reason, the transcript still completes normally, just without the speaker labels — you won't lose your notes over it.
+
 ## Summarizing
 
 Once a transcript is ready, click **✨ Summarize**. This produces structured notes with three sections:

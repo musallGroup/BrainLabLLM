@@ -10,12 +10,13 @@ How the app becomes the `.zip` package end users download — including several 
 
 ## Building the app bundle
 
-The app is packaged with [PyInstaller](https://pyinstaller.org) in `--onedir` mode (not `--onefile`) — with ~2 GB of bundled model weights and DLLs, `--onefile`'s startup-time self-extraction to a temp directory would add meaningful launch latency on every run; `--onedir` pays that cost once, at install time, instead.
+The app is packaged with [PyInstaller](https://pyinstaller.org) in `--onedir` mode (not `--onefile`) — with ~6 GB of bundled model weights and DLLs (most of it PyTorch's CUDA runtime, needed for [speaker identification](#diarization-model-bundling)), `--onefile`'s startup-time self-extraction to a temp directory would add meaningful launch latency on every run; `--onedir` pays that cost once, at install time, instead.
 
 ```bash title="Build command (run from the project root)"
-pyinstaller --name BrainLabLLM --onedir --windowed --noconfirm \
+pyinstaller --name BrainLabLLM --onedir --windowed --noconfirm --noupx \
   --icon app_icon.ico \
   --add-data "<path-to-cached-whisper-medium-model>;whisper_model" \
+  --add-data "<path-to-cached-pyannote-diarization-model>;diarization_model" \
   --add-binary "<conda-env>\Library\bin\tcl86t.dll;." \
   --add-binary "<conda-env>\Library\bin\tk86t.dll;." \
   --add-binary "<conda-env>\Library\bin\liblzma.dll;." \
@@ -29,8 +30,21 @@ pyinstaller --name BrainLabLLM --onedir --windowed --noconfirm \
   --collect-all onnxruntime \
   --collect-all tokenizers \
   --collect-all huggingface_hub \
+  --collect-all torch \
+  --collect-all torchaudio \
+  --collect-all torchcodec \
+  --collect-all pyannote.audio \
+  --collect-all pyannote.core \
+  --collect-all pyannote.database \
+  --collect-all pyannote.pipeline \
+  --collect-all pyannote.metrics \
+  --collect-all pyannoteai_sdk \
+  --collect-all asteroid_filterbanks \
   main.py
 ```
+
+!!! note "`--noupx`: don't compress the CUDA DLLs"
+    UPX compression is skipped for this build. `torch`'s bundled CUDA runtime (`cublas`, `cudnn`, `cusparse`, `cufft`, `cusolver`) is already ~4 GB of dense binary — compressing it buys little, adds real time to every build, and UPX has a history of flaky interaction with large, complex DLLs. Simpler to just not risk it for marginal savings.
 
 ### Why the explicit `--add-binary` DLLs { #dll-gotcha }
 
@@ -52,6 +66,12 @@ def resolve_model_path(model_size):
 ```
 
 `faster-whisper`'s `WhisperModel(...)` constructor accepts either a Hugging Face model name *or* a local directory path containing the converted model files (`model.bin`, `config.json`, `tokenizer.json`, `vocabulary.txt`) — this is what makes the swap possible without touching the loading code itself.
+
+### Bundling the speaker-identification model { #diarization-model-bundling }
+
+The same pattern is reused for `pyannote/speaker-diarization-community-1` (see [Architecture](../architecture.md#speaker-diarization) for why this model specifically): its cache directory is bundled via `--add-data ...;diarization_model`, and `diarization.py`'s `resolve_diarization_model_path()` checks `sys.frozen` the same way `resolve_model_path()` does, falling back to the Hugging Face repo id plus a dev-only `HUGGINGFACE_TOKEN` (see [Building from Source](building.md)) when running unfrozen. `pyannote.audio`'s `Pipeline.from_pretrained(...)` accepts a bare local directory path with no token needed, exactly like `WhisperModel` does — confirmed directly, since this is the one part of the frozen build that's easy to get subtly wrong without testing it.
+
+This is a much heavier addition than the speech model: `torch`'s CUDA runtime alone is roughly 4 GB (`cublas`, `cudnn`, `cusparse`, `cufft`, `cusolver` — the actual math libraries GPU tensor ops need, not something safely prunable). That's a deliberate, discussed trade-off, not an oversight — see [Installation](../getting-started/installation.md) for the resulting download size end users see. The alternative (a separate, optional "with Speaker ID" build) was considered and rejected in favor of keeping a single installer simple to build, test, and hand out, at the cost of every install carrying weight that machines without a GPU can never use.
 
 ## GPU/CPU robustness across unknown hardware
 

@@ -19,7 +19,8 @@ Built for people with zero coding experience: a double-click installer, no Pytho
 ## Features
 
 - 💬 **Chat** with markdown/code rendering, conversation history, and file attachments
-- 🎙️ **Meeting recording** with a locally-bundled speech-to-text model (GPU-accelerated, CPU fallback)
+- 🎙️ **Meeting recording** with a locally-bundled speech-to-text model (GPU-accelerated, CPU fallback), or transcribe an existing audio/video file
+- 🗣️ **Speaker identification** — labels who's talking in the transcript and summary (requires a GPU)
 - ✨ **AI summaries** that scale to hour-long meetings via map-reduce summarization
 - 📤 Export to plain text, or save into searchable chat history
 - ⚙️ In-app settings — no config file editing needed for day-to-day use
@@ -48,11 +49,14 @@ See [Building from Source](https://denlau96.github.io/BrainLabLLM/development/bu
 ## Project structure
 
 ```
-main.py       Tkinter UI, chat networking, summarization
-meeting.py    Audio recording + transcription (no UI dependency)
-theme.py      Color palette + ttk.Style setup
-installer.py  Standalone installer GUI
-docs/         This documentation site (MkDocs Material)
+main.py          Tkinter UI, chat networking, summarization
+meeting.py       Audio recording + transcription (no UI dependency)
+diarization.py   Speaker identification (no UI dependency)
+agent.py         Coding-agent tool-calling loop (no UI dependency)
+theme.py         Color palette + ttk.Style setup
+installer.py     Standalone installer GUI
+tests/           Automated pytest suite
+docs/            This documentation site (MkDocs Material)
 ```
 
 ## Architecture at a glance
