@@ -114,20 +114,36 @@ class InstallerApp:
             self.install_button.config(state=tk.NORMAL)
 
     def _copy_with_progress(self, src, dst):
+        # Progress is tracked by bytes, not file count: a handful of the
+        # bundled CUDA DLLs are individually hundreds of MB, next to
+        # thousands of small Python files. A count-based bar would race to
+        # ~100% almost instantly and then sit motionless for a long stretch
+        # while those few huge files copy - indistinguishable from a hang.
         all_files = []
+        total_bytes = 0
         for root_dir, _dirs, files in os.walk(src):
             for f in files:
-                all_files.append(os.path.join(root_dir, f))
-        total = len(all_files) or 1
+                path = os.path.join(root_dir, f)
+                all_files.append(path)
+                total_bytes += os.path.getsize(path)
+        total_bytes = total_bytes or 1
         os.makedirs(dst, exist_ok=True)
-        for i, path in enumerate(all_files):
+        copied_bytes = 0
+        chunk_size = 4 * 1024 * 1024
+        for path in all_files:
             rel = os.path.relpath(path, src)
             dest_path = os.path.join(dst, rel)
             os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-            shutil.copy2(path, dest_path)
-            self.progress["value"] = (i + 1) / total * 100
-            if i % 20 == 0:
-                self.root.update_idletasks()
+            with open(path, "rb") as fsrc, open(dest_path, "wb") as fdst:
+                while True:
+                    chunk = fsrc.read(chunk_size)
+                    if not chunk:
+                        break
+                    fdst.write(chunk)
+                    copied_bytes += len(chunk)
+                    self.progress["value"] = copied_bytes / total_bytes * 100
+                    self.root.update_idletasks()
+            shutil.copystat(path, dest_path)
 
     def _create_shortcut(self, target, shortcut_path):
         os.makedirs(os.path.dirname(shortcut_path), exist_ok=True)
