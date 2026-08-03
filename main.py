@@ -15,6 +15,7 @@ import agent
 import diarization
 import meeting
 import theme
+import wiki
 
 APP_TITLE = "BrainLabLLM"
 
@@ -271,6 +272,86 @@ def summarize_transcript(transcript, should_stop=None, on_progress=None):
     reduce_prompt = [{"role": "user", "content": _build_final_reduce_prompt(final_parts)}]
     return "".join(
         query_ollama_stream(reduce_prompt, should_stop=should_stop, options={"num_ctx": SUMMARY_NUM_CTX})
+    )
+
+
+# A single-tool lookup helper, not a coding agent - contrast agent.MAX_ITERATIONS = 20.
+MAX_WIKI_TOOL_ITERATIONS = 4
+WIKI_TOOL_NUM_CTX = 16384
+
+WIKI_TOOL_SYSTEM_HINT = (
+    "The user has enabled a tool that lets you fetch pages from the lab's internal wiki "
+    f"({wiki.WIKI_DOMAIN}) for this message - their opting it in is itself a signal this "
+    "question may need it. Use the fetch_wiki_page tool if the question is about "
+    "lab-specific topics (rules, procedures, equipment, protocols, group-specific "
+    "information) rather than general knowledge."
+)
+
+
+def answer_with_wiki_tool(messages, should_stop=None, on_status=None):
+    """Answers a chat message with the fetch_wiki_page tool available. Runs a
+    small, bounded tool-calling loop via agent.query_ollama_chat (this is a
+    single-tool lookup helper, not a general agent), dispatching
+    fetch_wiki_page calls inline since there's only the one tool to route to.
+
+    Returns (content, pages_used) - pages_used is the list of wiki page
+    titles actually fetched, for the caller to note in the rendered reply.
+    Raises on genuine Ollama connectivity failure, same contract as
+    summarize_transcript - the caller is expected to catch and translate via
+    friendly_error_message, not this function.
+    """
+    on_status = on_status or (lambda msg: None)
+    working = [{"role": "system", "content": WIKI_TOOL_SYSTEM_HINT}] + list(messages)
+    pages_used = []
+
+    for _ in range(MAX_WIKI_TOOL_ITERATIONS):
+        if should_stop and should_stop():
+            return "", pages_used
+
+        on_status("Thinking...")
+        message = agent.query_ollama_chat(
+            API_URL,
+            MODEL,
+            working,
+            tools=[wiki.WIKI_FETCH_TOOL_SCHEMA],
+            should_stop=should_stop,
+            options={"num_ctx": WIKI_TOOL_NUM_CTX},
+        )
+        if message is None or (should_stop and should_stop()):
+            return "", pages_used
+
+        working.append(message)
+        tool_calls = message.get("tool_calls") or []
+        if not tool_calls:
+            return message.get("content") or "", pages_used
+
+        for call in tool_calls:
+            call_id = call.get("id", "")
+            fn = call.get("function", {})
+            name = fn.get("name", "")
+            arguments = fn.get("arguments", {})
+            if isinstance(arguments, str):
+                try:
+                    arguments = json.loads(arguments)
+                except json.JSONDecodeError:
+                    arguments = {}
+
+            if name != "fetch_wiki_page":
+                working.append({"role": "tool", "tool_call_id": call_id, "content": f"Error: unknown tool {name!r}"})
+                continue
+
+            page_title = arguments.get("page_title", "")
+            on_status(f'Looking up wiki page "{page_title}"...')
+            try:
+                result = wiki.fetch_wiki_page(page_title)
+                pages_used.append(result["title"])
+                working.append({"role": "tool", "tool_call_id": call_id, "content": json.dumps(result)})
+            except wiki.WikiError as exc:
+                working.append({"role": "tool", "tool_call_id": call_id, "content": f"Error: {exc}"})
+
+    return (
+        "I wasn't able to finish looking that up - could you try asking again, maybe with a more specific question?",
+        pages_used,
     )
 
 
@@ -638,6 +719,16 @@ class ChatApp:
         self.attach_button.pack(side=tk.LEFT, padx=(6, 0), pady=8)
         ToolTip(self.attach_button, "Attach a text or code file to include with your message")
 
+        self.wiki_lookup_var = tk.BooleanVar(value=False)
+        self.wiki_lookup_check = ttk.Checkbutton(input_row, text="🔎 Wiki", variable=self.wiki_lookup_var)
+        self.wiki_lookup_check.pack(side=tk.LEFT, padx=(6, 0), pady=8)
+        ToolTip(
+            self.wiki_lookup_check,
+            f"Let the assistant look up pages on the lab wiki ({wiki.WIKI_DOMAIN}) to answer "
+            "this message. Turns off again after sending, since it replies all at once "
+            "instead of streaming.",
+        )
+
         self.action_button = ttk.Button(
             input_row, text="Send ➤", style="Accent.TButton", command=self.send_message
         )
@@ -928,7 +1019,9 @@ class ChatApp:
         self.attachments = []
         self._refresh_attachments_row()
         self._add_user_message(combined, title_hint)
-        self._start_generation()
+        use_wiki_tool = self.wiki_lookup_var.get()
+        self.wiki_lookup_var.set(False)
+        self._start_generation(use_wiki_tool=use_wiki_tool)
 
     def _add_user_message(self, text, title_hint=None):
         if self.current["title"] == "New chat":
@@ -944,15 +1037,16 @@ class ChatApp:
             return
         self.messages.pop()
         self._render_history()
-        self._start_generation()
+        self._start_generation(use_wiki_tool=self.wiki_lookup_var.get())
 
-    def _start_generation(self):
+    def _start_generation(self, use_wiki_tool=False):
         self.generation_token += 1
         token = self.generation_token
         self.stream_buffer = ""
         self._append_pending()
         self._set_waiting(True)
-        threading.Thread(target=self._fetch, args=(list(self.messages), token), daemon=True).start()
+        target = self._fetch_with_wiki_tool if use_wiki_tool else self._fetch
+        threading.Thread(target=target, args=(list(self.messages), token), daemon=True).start()
 
     def _fetch(self, messages, token):
         try:
@@ -990,6 +1084,41 @@ class ChatApp:
         self._render_history()
         self._append_turn("Assistant", f"[{friendly_error_message(exc)}]", "assistant_label", body_tag="error")
         self._set_waiting(False)
+
+    def _fetch_with_wiki_tool(self, messages, token):
+        try:
+            content, pages_used = answer_with_wiki_tool(
+                messages,
+                should_stop=lambda: token != self.generation_token,
+                on_status=lambda msg: self.root.after(0, self._on_wiki_status, token, msg),
+            )
+        except Exception as exc:
+            if token == self.generation_token:
+                self.root.after(0, self._on_error, token, exc)
+            return
+        if token == self.generation_token:
+            self.root.after(0, self._on_wiki_fetch_complete, token, content, pages_used)
+
+    def _on_wiki_status(self, token, message):
+        if token != self.generation_token:
+            return
+        self.status_var.set(message)
+
+    def _on_wiki_fetch_complete(self, token, content, pages_used):
+        if token != self.generation_token:
+            return
+        if not content:
+            # Cancelled before any real reply was produced - nothing to show.
+            self._render_history()
+            self._set_waiting(False)
+            return
+        if pages_used:
+            pages_note = ", ".join(f'"{p}"' for p in pages_used)
+            content = f"🔎 **Looked up wiki page:** {pages_note}\n\n{content}"
+        self.messages.append({"role": "assistant", "content": content})
+        self._render_history()
+        self._set_waiting(False)
+        save_conversations(self.conversations)
 
     def stop_generation(self):
         if not self.waiting:

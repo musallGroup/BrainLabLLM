@@ -475,7 +475,7 @@ def friendly_agent_error(exc):
     return str(exc)
 
 
-def query_ollama_chat(api_url, model, messages, tools=None, should_stop=None, timeout=180):
+def query_ollama_chat(api_url, model, messages, tools=None, should_stop=None, timeout=180, options=None):
     """Tool-calling-capable sibling of main.query_ollama_stream. Non-streaming,
     since that's the exact request shape confirmed to return structured
     tool_calls for this model - streaming tool-calls' chunk-accumulation
@@ -490,6 +490,8 @@ def query_ollama_chat(api_url, model, messages, tools=None, should_stop=None, ti
     payload = {"model": model, "messages": messages, "stream": False}
     if tools:
         payload["tools"] = tools
+    if options:
+        payload["options"] = options
 
     response = requests.post(api_url, json=payload, timeout=timeout)
     response.raise_for_status()
