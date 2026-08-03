@@ -55,4 +55,4 @@ You can click **Summarize** again at any time to regenerate the notes (for examp
 
 - The **timer** shows elapsed recording time.
 - **Whisper: GPU** or **Whisper: CPU**, shown once the first transcription starts, tells you which one is doing the work. GPU is used automatically when available; this is purely informational.
-- The status text on the right of the toolbar reflects what's currently happening (*Loading model...*, *Recording*, *Transcribing...*, *Summarizing part 2/5...*, *Done*, or an error message if something went wrong).
+- The status text on the right of the toolbar reflects what's currently happening (*Loading model...*, *Recording*, *Transcribing...*, *Summarizing part 2/5...*, *Consolidating notes 1/4...* for especially long meetings, *Generating final notes...*, *Done*, or an error message if something went wrong).

@@ -81,14 +81,25 @@ flowchart TD
     C1 --> M1["Mini-summary 1"]
     C2 --> M2["Mini-summary 2"]
     C3 --> M3["Mini-summary N"]
-    M1 & M2 & M3 --> R["Reduce:\ncombine into final notes"]
+    M1 & M2 & M3 --> G{"More than one\ngroup of chunks?"}
+    G -- "no (short/moderate)" --> R["Final reduce:\nstructured notes"]
+    G -- "yes (long meeting)" --> I["Intermediate reduce:\nconsolidate each group,\nno further compression"]
+    I --> R
     R --> OUT["Key Points / Decisions / Action Items"]
 ```
 
 1. **Map**: the transcript is split into chunks (by sentence boundaries, targeting ~4000 characters each). Each chunk is summarized *independently* into a compact, stateless bullet-point mini-summary. A garbled or unusual chunk only pollutes its own mini-summary, not the whole document.
-2. **Reduce**: all the mini-summaries (not the raw transcript) are combined into one final structured-notes pass. Since inputs here are already-compact summaries, this stays cheap even for very long meetings — a dozen chunk-summaries is a trivial amount of text against the model's context window, regardless of how long the original meeting was.
+2. **Reduce**: the mini-summaries (not the raw transcript) are combined into one final structured-notes pass.
 
 Short transcripts that fit in a single chunk skip the map step entirely and go straight to the reduce prompt on the raw text — no unnecessary complexity for the common case.
+
+### Why a hierarchical reduce for long meetings { #hierarchical-reduce }
+
+The original assumption here was that combining mini-summaries is always cheap — a dozen chunk-summaries is a trivial amount of text against the model's context window, so a single reduce call should be able to just handle it. That assumption was directly measured and found wrong: for a genuinely long meeting (a real ~90-minute lab meeting, 89,900 characters, splitting into 23 chunks), the combined chunk-summaries totaled only ~4,950 tokens — comfortably under the model's 16,384-token context window — yet a single reduce call over all 23 still produced a summary that covered only the first ~40% of the meeting, silently dropping entire topics from the back half. This is a real behavior of long, open-ended single-pass synthesis (a known LLM tendency to underweight later items in a long unstructured list), not a token-budget problem — increasing `num_ctx` alone does not fix it.
+
+The fix, validated the same way (measured on the same real transcript, not assumed): once there's more than one group of chunks (`group_items()`, default group size 6), each group first goes through an **intermediate reduce** that explicitly consolidates without compressing further — merge and de-duplicate, but don't shorten. Only the resulting (few) group-summaries go into the final structuring pass, which is also told explicitly how many parts there are and instructed to make sure every part with real content is represented, not just the earliest ones. On the same test transcript, this took the final summary from covering roughly 40% of the meeting to surfacing specific, previously entirely-missing content verbatim (down to exact figures mentioned in the meeting). Short and moderate meetings (one group) are unaffected — same single reduce call as before, just with the added numbering/coverage instruction.
+
+Summarization calls also now pass `num_ctx` explicitly (`main.py`'s `SUMMARY_NUM_CTX`) rather than relying on the Ollama server's Modelfile default — not the cause of the bug above, but a real gap: behavior was previously silently dependent on server-side configuration that could change.
 
 ## Concurrency model
 
