@@ -113,8 +113,10 @@ def friendly_error_message(exc):
     return str(exc)
 
 
-def query_ollama_stream(messages, should_stop=None):
+def query_ollama_stream(messages, should_stop=None, options=None):
     payload = {"model": MODEL, "messages": messages, "stream": True}
+    if options:
+        payload["options"] = options
     with requests.post(API_URL, json=payload, timeout=120, stream=True) as response:
         response.raise_for_status()
         for line in response.iter_lines():
@@ -148,6 +150,63 @@ def chunk_text(text, max_chars=4000):
     return chunks
 
 
+def group_items(items, size=6):
+    """Split items into consecutive groups of at most size each."""
+    return [items[i:i + size] for i in range(0, len(items), size)]
+
+
+# Explicit num_ctx for every summarization call, rather than relying on the
+# server's Modelfile default - see docs/architecture.md#summarization.
+SUMMARY_NUM_CTX = 16384
+
+SPEAKER_ATTRIBUTION_RULE = (
+    "Only attribute a decision or action item to a specific speaker (e.g. 'Speaker 1') "
+    "if the notes explicitly name that speaker - never invent a speaker attribution "
+    "that isn't already there."
+)
+
+
+def _build_intermediate_reduce_prompt(group):
+    """Consolidates one group of chunk summaries into a fuller (not further
+    compressed) set of notes - the middle tier of the hierarchical reduce,
+    used only for long transcripts. See summarize_transcript()."""
+    group_text = "\n\n".join(group)
+    return (
+        "Below are compact notes from several consecutive excerpts of one meeting. "
+        "Consolidate them into a single fuller set of notes that preserves every "
+        "distinct topic, decision, and action item mentioned below - do not compress "
+        "further than the input already is, just merge and de-duplicate where the "
+        "same point is repeated. Keep speaker attributions (e.g. 'Speaker 1') exactly "
+        "as given.\n\n" + group_text
+    )
+
+
+def _build_final_reduce_prompt(parts):
+    """parts: the notes to synthesize into the final structured summary - either
+    chunk summaries directly (short/moderate transcripts) or group summaries
+    (long transcripts, after the intermediate reduce)."""
+    if len(parts) == 1:
+        numbered = parts[0]
+        coverage_note = ""
+    else:
+        numbered = "\n\n".join(f"[Part {i + 1} of {len(parts)}]\n{p}" for i, p in enumerate(parts))
+        coverage_note = (
+            "\n\nIMPORTANT: This meeting covered many distinct topics across all "
+            f"{len(parts)} parts, not just the earlier ones. Go through the parts in "
+            "order and make sure your summary includes something from EVERY part that "
+            "contains substantive content - do not let the summary skew toward only "
+            "the earlier parts of the meeting. A part with only small talk or "
+            "logistics can be skipped, but any part with a real update, technical "
+            "discussion, or decision must be represented."
+        )
+    return (
+        "Based on these meeting notes, produce a structured summary with three "
+        "sections: 'Key Points', 'Decisions', and 'Action Items'. Use markdown bullet "
+        "points under each heading. If a section has nothing relevant, write "
+        "'None noted.' under it. " + SPEAKER_ATTRIBUTION_RULE + coverage_note + "\n\n" + numbered
+    )
+
+
 def summarize_transcript(transcript, should_stop=None, on_progress=None):
     """Map-reduce summarization over a full meeting transcript.
 
@@ -156,6 +215,14 @@ def summarize_transcript(transcript, should_stop=None, on_progress=None):
     then reduces the chunk summaries into structured notes. For a short
     transcript that's already a single chunk, the map step is skipped and
     the reduce step runs directly on the raw text.
+
+    For long transcripts (more than group_items()'s default group size of
+    chunks), an intermediate consolidation pass groups chunk summaries
+    before the final structuring pass. A single reduce call over many chunk
+    summaries otherwise skews toward earlier content and drops later
+    material almost entirely, even though everything fits comfortably in
+    the model's context window - measured directly, not assumed; see
+    docs/architecture.md#summarization for the finding that motivated this.
     """
     chunks = chunk_text(transcript)
     on_progress = on_progress or (lambda msg: None)
@@ -177,27 +244,34 @@ def summarize_transcript(transcript, should_stop=None, on_progress=None):
                     ),
                 }
             ]
-            summary = "".join(query_ollama_stream(prompt, should_stop=should_stop))
+            summary = "".join(
+                query_ollama_stream(prompt, should_stop=should_stop, options={"num_ctx": SUMMARY_NUM_CTX})
+            )
             chunk_summaries.append(summary)
             if should_stop and should_stop():
                 return ""
 
+    groups = group_items(chunk_summaries)
+    if len(groups) > 1:
+        group_summaries = []
+        for i, group in enumerate(groups):
+            on_progress(f"Consolidating notes {i + 1}/{len(groups)}...")
+            prompt = [{"role": "user", "content": _build_intermediate_reduce_prompt(group)}]
+            summary = "".join(
+                query_ollama_stream(prompt, should_stop=should_stop, options={"num_ctx": SUMMARY_NUM_CTX})
+            )
+            group_summaries.append(summary)
+            if should_stop and should_stop():
+                return ""
+        final_parts = group_summaries
+    else:
+        final_parts = chunk_summaries
+
     on_progress("Generating final notes...")
-    combined = "\n\n".join(chunk_summaries)
-    reduce_prompt = [
-        {
-            "role": "user",
-            "content": (
-                "Based on these meeting notes, produce a structured summary with three "
-                "sections: 'Key Points', 'Decisions', and 'Action Items'. Use markdown bullet "
-                "points under each heading. If a section has nothing relevant, write "
-                "'None noted.' under it. Only attribute a decision or action item to a specific "
-                "speaker (e.g. 'Speaker 1') if the notes below explicitly name that speaker - "
-                "never invent a speaker attribution that isn't already there.\n\n" + combined
-            ),
-        }
-    ]
-    return "".join(query_ollama_stream(reduce_prompt, should_stop=should_stop))
+    reduce_prompt = [{"role": "user", "content": _build_final_reduce_prompt(final_parts)}]
+    return "".join(
+        query_ollama_stream(reduce_prompt, should_stop=should_stop, options={"num_ctx": SUMMARY_NUM_CTX})
+    )
 
 
 def new_conversation(title="New chat"):
