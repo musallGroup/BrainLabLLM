@@ -101,6 +101,20 @@ The fix, validated the same way (measured on the same real transcript, not assum
 
 Summarization calls also now pass `num_ctx` explicitly (`main.py`'s `SUMMARY_NUM_CTX`) rather than relying on the Ollama server's Modelfile default — not the cause of the bug above, but a real gap: behavior was previously silently dependent on server-side configuration that could change.
 
+## Wiki lookup: a purpose-built tool, not web search { #wiki-lookup }
+
+The Chat tab can look up pages on the lab's internal MediaWiki (`wiki2.bio2.rwth-aachen.de`) via an opt-in **🔎 Wiki** checkbox. This was deliberately not built as general web search.
+
+**Why not Ollama's own hosted `web_search`/`web_fetch` tools.** Ollama offers cloud-hosted search tools, but both route every request through `ollama.com`'s own servers — which have no path into the lab's internal network and could never reach an on-site or VPN-only wiki. Using them would have meant an external account, an API key, and a capability that structurally cannot do the one thing actually needed. `wiki.py` instead talks to the wiki directly: no cloud dependency, no account, no key, nothing that isn't already true of reaching the lab's own Ollama server.
+
+**Non-streaming, and opt-in rather than always-on.** Regular Chat messages stream token-by-token, as they always have. A wiki lookup needs tool-calling, and `agent.py`'s own `query_ollama_chat` already established (for the Agent tab) that reliably detecting `tool_calls` mid-stream isn't something to rely on — so a lookup-enabled turn switches to the same non-streaming request shape Agent already uses, gets its answer as one complete round trip, then reveals it all at once. Making `tools` a permanent part of every Chat request would have forced *every* message onto that non-streaming path for the sake of a capability most messages never need — so it's gated behind a checkbox instead, checked per-message and reset after send (like attachments, not a standing mode like Agent's Planning/Auto toggle), so only turns that actually ask for a lookup pay that cost.
+
+**The domain boundary is structural, not a permission check.** The tool builds its request from `WIKI_BASE_URL` (a fixed `http://wiki2.bio2.rwth-aachen.de/index.php/` string) plus an escaped page title the model supplies — there's no way for a page title to redirect the request to a different host, the same way `agent.resolve_scoped_path` structurally can't be escaped by a crafted file path. `http`, deliberately not `https`: the wiki's TLS certificate is issued for a different hostname than the one it's actually reached at, so forcing HTTPS breaks the connection outright.
+
+**Extraction uses the standard library, not a new dependency.** MediaWiki's HTML is well-understood and stable enough that `html.parser.HTMLParser` scoped to `<div id="mw-content-text">` (with `mw-editsection`/`printfooter` chrome stripped, since those live *inside* that div rather than being excluded automatically like the surrounding navigation) does the job in about 60 lines — matching this project's pattern of only adding a dependency for something the standard library genuinely can't do.
+
+**Failure is graceful, matching diarization's precedent.** A nonexistent page title (or an unreachable wiki) raises `wiki.WikiError`, which becomes the tool's result message rather than a crash — the model sees the failure and explains it in the reply, the same "degrade, don't fail hard" shape already used when a diarization run fails on an otherwise-successful transcription.
+
 ## Concurrency model
 
 The UI runs on Tkinter's single main thread, as it must. Every potentially slow operation — model loading, transcription, network requests to the AI server — runs on a background `threading.Thread`, with results marshaled back to the main thread via `root.after(0, ...)`, which is the only thread-safe way to touch Tkinter widgets from outside the main thread.

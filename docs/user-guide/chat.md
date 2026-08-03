@@ -47,3 +47,16 @@ Once you attach a file, it appears as a small chip above the input box showing i
 
 !!! tip "Multiple files at once"
     The file picker supports selecting multiple files in one go — hold ++ctrl++ (or ++shift++ for a range) while selecting in the dialog.
+
+## Looking things up on the lab wiki { #wiki-lookup }
+
+Check **🔎 Wiki** next to the input box before sending a message to let the assistant fetch a page from the lab's internal wiki (`wiki2.bio2.rwth-aachen.de`) if it thinks the answer is there — lab rules, procedures, equipment, protocols, and similar lab-specific topics, rather than general knowledge. Ask something like *"what does the wiki say about systems neurophysiology?"* and it'll look up the relevant page itself.
+
+This only reaches that one internal wiki, nothing else on the internet — no accounts, no API keys, and nothing ever leaves the lab network. See [Architecture](../architecture.md#wiki-lookup) for why this is a purpose-built tool rather than general web search.
+
+A couple of things worth knowing:
+
+- **The reply arrives all at once instead of streaming**, unlike a normal message. This is the trade-off for the assistant being able to decide, read a page, and then answer — reliably detecting that mid-stream isn't something this app relies on, so a lookup-enabled turn waits and reveals the complete answer instead.
+- **The checkbox turns itself off after every send** (like attachments) rather than staying on — so it only affects the one message you checked it for, not every message afterward.
+- If the reply used the wiki, it starts with a small **🔎 Looked up wiki page: ...** note naming the page, so you can tell it wasn't just answering from general knowledge.
+- If the page doesn't exist (wrong title, typo), the assistant says so in its reply rather than showing an error — it's told about the failure and can react to it, the same way a person would if a link 404'd.
