@@ -6,7 +6,7 @@
 
 **A private AI chat and meeting-notes assistant that runs entirely on lab hardware.**
 
-[📖 Documentation](https://denlau96.github.io/BrainLabLLM/) · [Installation](https://denlau96.github.io/BrainLabLLM/getting-started/installation/) · [Troubleshooting](https://denlau96.github.io/BrainLabLLM/troubleshooting/)
+[📖 Documentation](https://musallgroup.github.io/BrainLabLLM/) · [Installation](https://musallgroup.github.io/BrainLabLLM/getting-started/installation/) · [Troubleshooting](https://musallgroup.github.io/BrainLabLLM/troubleshooting/)
 
 </div>
 
@@ -25,7 +25,7 @@ Built for people with zero coding experience: a double-click installer, no Pytho
 - 📤 Export to plain text, or save into searchable chat history
 - ⚙️ In-app settings — no config file editing needed for day-to-day use
 
-See the full [documentation site](https://denlau96.github.io/BrainLabLLM/) for installation, usage, configuration, and architecture details.
+See the full [documentation site](https://musallgroup.github.io/BrainLabLLM/) for installation, usage, configuration, and architecture details.
 
 ## Quick start
 
@@ -33,7 +33,7 @@ See the full [documentation site](https://denlau96.github.io/BrainLabLLM/) for i
 2. Unzip it, run `BrainLabLLMSetup.exe`, click **Install**.
 3. Done — no other setup required.
 
-Full walkthrough: [Installation](https://denlau96.github.io/BrainLabLLM/getting-started/installation/) · [Quick Start](https://denlau96.github.io/BrainLabLLM/getting-started/quick-start/)
+Full walkthrough: [Installation](https://musallgroup.github.io/BrainLabLLM/getting-started/installation/) · [Quick Start](https://musallgroup.github.io/BrainLabLLM/getting-started/quick-start/)
 
 ## For developers
 
@@ -44,7 +44,7 @@ pip install requests sounddevice soundfile scipy numpy faster-whisper
 python main.py
 ```
 
-See [Building from Source](https://denlau96.github.io/BrainLabLLM/development/building/) and [Packaging & Distribution](https://denlau96.github.io/BrainLabLLM/development/packaging/) for the full developer guide, including how the installer is built.
+See [Building from Source](https://musallgroup.github.io/BrainLabLLM/development/building/) and [Packaging & Distribution](https://musallgroup.github.io/BrainLabLLM/development/packaging/) for the full developer guide, including how the installer is built.
 
 ## Project structure
 
@@ -72,7 +72,7 @@ flowchart LR
     UI <--> |"chat + summaries"| OLLAMA
 ```
 
-Full write-up, including why the app transcribes in one pass instead of live and why summarization uses map-reduce instead of refine-style: [Architecture](https://denlau96.github.io/BrainLabLLM/architecture/).
+Full write-up, including why the app transcribes in one pass instead of live and why summarization uses map-reduce instead of refine-style: [Architecture](https://musallgroup.github.io/BrainLabLLM/architecture/).
 
 ---
 
