@@ -16,7 +16,7 @@ flowchart LR
     end
 
     subgraph lab["Lab network"]
-        OLLAMA["Ollama server\n(qwen2.5-coder)"]
+        OLLAMA["Ollama server\n(qwen3.6-coder)"]
     end
 
     UI <--> |"chat + summarization\nHTTP, requires network"| OLLAMA

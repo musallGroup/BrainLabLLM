@@ -7,7 +7,7 @@ import pytest
 import requests
 
 API_URL = "http://10.3.2.112:11434/api/chat"
-MODEL = "qwen2.5:32b-coder"
+MODEL = "qwen3.6:35b-coder"
 
 
 def _server_reachable():

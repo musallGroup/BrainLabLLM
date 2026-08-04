@@ -13,7 +13,7 @@ It's a plain text file — open it with Notepad, edit, save, and restart the app
 ```json title="config.json"
 {
   "ollama_api_url": "http://10.3.2.112:11434/api/chat",
-  "ollama_model": "qwen2.5:32b-coder",
+  "ollama_model": "qwen3.6:35b-coder",
   "whisper_model_size": "medium",
   "whisper_device": "auto"
 }

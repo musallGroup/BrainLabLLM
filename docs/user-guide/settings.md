@@ -9,7 +9,7 @@ Open **File → Settings** (or press ++ctrl+comma++) to open the dialog.
 | Field | What it does |
 |---|---|
 | **Server address** | The URL of your lab's Ollama server's chat endpoint, e.g. `http://10.3.2.112:11434/api/chat`. Change this if your lab's AI server moves to a new address. |
-| **Model name** | The name of the model to use on that server, e.g. `qwen2.5:32b-coder`. Change this to switch models if your lab runs more than one. |
+| **Model name** | The name of the model to use on that server, e.g. `qwen3.6:35b-coder`. Change this to switch models if your lab runs more than one. |
 
 Click **Test Connection** before saving to confirm the app can actually reach the server and get a response — this catches typos and network issues immediately rather than after you close the dialog.
 

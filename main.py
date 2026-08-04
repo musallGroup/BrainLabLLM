@@ -47,7 +47,7 @@ DEFAULT_CONFIG = {
         "whisper_device can be 'auto', 'cuda' (force GPU), or 'cpu' (force CPU)."
     ),
     "ollama_api_url": "http://10.3.2.112:11434/api/chat",
-    "ollama_model": "qwen2.5:32b-coder",
+    "ollama_model": "qwen3.6:35b-coder",
     "whisper_model_size": "medium",
     "whisper_device": "auto",
 }
@@ -158,7 +158,11 @@ def group_items(items, size=6):
 
 # Explicit num_ctx for every summarization call, rather than relying on the
 # server's Modelfile default - see docs/architecture.md#summarization.
-SUMMARY_NUM_CTX = 16384
+# qwen3.6:35b-coder's real window is 262144 (confirmed via /api/tags), but this
+# is allocated per-request against the shared lab GPU, so it's set well below
+# that ceiling rather than maxed out - 65536 is already 4x the old qwen2.5
+# value and far beyond what a meeting transcript's chunk-summaries need.
+SUMMARY_NUM_CTX = 65536
 
 SPEAKER_ATTRIBUTION_RULE = (
     "Only attribute a decision or action item to a specific speaker (e.g. 'Speaker 1') "
@@ -277,7 +281,8 @@ def summarize_transcript(transcript, should_stop=None, on_progress=None):
 
 # A single-tool lookup helper, not a coding agent - contrast agent.MAX_ITERATIONS = 20.
 MAX_WIKI_TOOL_ITERATIONS = 4
-WIKI_TOOL_NUM_CTX = 16384
+# See SUMMARY_NUM_CTX above for why this isn't set to the model's full window.
+WIKI_TOOL_NUM_CTX = 65536
 
 WIKI_TOOL_SYSTEM_HINT = (
     "The user has enabled a tool that lets you fetch pages from the lab's internal wiki "
