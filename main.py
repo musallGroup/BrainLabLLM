@@ -15,6 +15,7 @@ import agent
 import diarization
 import meeting
 import theme
+import websearch
 import wiki
 
 APP_TITLE = "BrainLabLLM"
@@ -279,56 +280,84 @@ def summarize_transcript(transcript, should_stop=None, on_progress=None):
     )
 
 
-# A single-tool lookup helper, not a coding agent - contrast agent.MAX_ITERATIONS = 20.
-MAX_WIKI_TOOL_ITERATIONS = 4
+# A single-turn tool-lookup helper, not a coding agent - contrast agent.MAX_ITERATIONS = 20.
+MAX_TOOL_LOOKUP_ITERATIONS = 4
 # See SUMMARY_NUM_CTX above for why this isn't set to the model's full window.
-WIKI_TOOL_NUM_CTX = 65536
+TOOL_LOOKUP_NUM_CTX = 65536
 
 WIKI_TOOL_SYSTEM_HINT = (
     "The user has enabled a tool that lets you fetch pages from the lab's internal wiki "
     f"({wiki.WIKI_DOMAIN}) for this message - their opting it in is itself a signal this "
     "question may need it. Use the fetch_wiki_page tool if the question is about "
     "lab-specific topics (rules, procedures, equipment, protocols, group-specific "
-    "information) rather than general knowledge."
+    "information) rather than general knowledge.\n\n"
+    "fetch_wiki_page has no search function - it only fetches one exact page title. "
+    "If you are not confident of the exact title, do NOT guess one based on how the "
+    f"question is phrased (invented titles routinely don't exist). Instead, fetch "
+    f"'{wiki.WIKI_LANDING_PAGE}' first - this lab's own page on the wiki - and look for real "
+    'links in its text, marked like [page_title: "Exact_Title"] right after the link\'s '
+    "visible label. Always use that exact marked title for your next fetch_wiki_page "
+    "call, never the visible label text next to it or a title you composed yourself - "
+    "they routinely differ from the real page title. If a page you land on isn't the "
+    "right one but has its own such links, follow those the same way rather than "
+    "guessing. Only report that something isn't on the wiki after actually following "
+    "real links like this, not after a single guessed title fails."
+)
+
+WEB_SEARCH_TOOL_SYSTEM_HINT = (
+    "The user has enabled a tool that lets you search the public web for this message - "
+    "their opting it in is itself a signal this question may need it. Use search_web for "
+    "questions needing current information or general (non-lab-specific) knowledge you're "
+    "not confident about. Cite source URLs from the results in your answer."
 )
 
 
-def answer_with_wiki_tool(messages, should_stop=None, on_status=None):
-    """Answers a chat message with the fetch_wiki_page tool available. Runs a
-    small, bounded tool-calling loop via agent.query_ollama_chat (this is a
-    single-tool lookup helper, not a general agent), dispatching
-    fetch_wiki_page calls inline since there's only the one tool to route to.
+def answer_with_tools(messages, use_wiki=False, use_websearch=False, should_stop=None, on_status=None):
+    """Answers a chat message with whichever tools are enabled (wiki lookup,
+    web search, or both together - additive, not mutually exclusive, same as
+    how Open WebUI attaches tools). Runs a small, bounded tool-calling loop
+    via agent.query_ollama_chat, dispatching by function name.
 
-    Returns (content, pages_used) - pages_used is the list of wiki page
-    titles actually fetched, for the caller to note in the rendered reply.
-    Raises on genuine Ollama connectivity failure, same contract as
-    summarize_transcript - the caller is expected to catch and translate via
-    friendly_error_message, not this function.
+    Returns (content, pages_used, queries_used) - the two lists track which
+    wiki pages / web searches were actually used, for the caller to note in
+    the rendered reply. Raises on genuine Ollama connectivity failure, same
+    contract as summarize_transcript - the caller is expected to catch and
+    translate via friendly_error_message, not this function.
     """
     on_status = on_status or (lambda msg: None)
-    working = [{"role": "system", "content": WIKI_TOOL_SYSTEM_HINT}] + list(messages)
-    pages_used = []
+    hints = []
+    tools = []
+    if use_wiki:
+        hints.append(WIKI_TOOL_SYSTEM_HINT)
+        tools.append(wiki.WIKI_FETCH_TOOL_SCHEMA)
+    if use_websearch:
+        hints.append(WEB_SEARCH_TOOL_SYSTEM_HINT)
+        tools.append(websearch.WEB_SEARCH_TOOL_SCHEMA)
 
-    for _ in range(MAX_WIKI_TOOL_ITERATIONS):
+    working = [{"role": "system", "content": "\n\n".join(hints)}] + list(messages)
+    pages_used = []
+    queries_used = []
+
+    for _ in range(MAX_TOOL_LOOKUP_ITERATIONS):
         if should_stop and should_stop():
-            return "", pages_used
+            return "", pages_used, queries_used
 
         on_status("Thinking...")
         message = agent.query_ollama_chat(
             API_URL,
             MODEL,
             working,
-            tools=[wiki.WIKI_FETCH_TOOL_SCHEMA],
+            tools=tools,
             should_stop=should_stop,
-            options={"num_ctx": WIKI_TOOL_NUM_CTX},
+            options={"num_ctx": TOOL_LOOKUP_NUM_CTX},
         )
         if message is None or (should_stop and should_stop()):
-            return "", pages_used
+            return "", pages_used, queries_used
 
         working.append(message)
         tool_calls = message.get("tool_calls") or []
         if not tool_calls:
-            return message.get("content") or "", pages_used
+            return message.get("content") or "", pages_used, queries_used
 
         for call in tool_calls:
             call_id = call.get("id", "")
@@ -341,22 +370,31 @@ def answer_with_wiki_tool(messages, should_stop=None, on_status=None):
                 except json.JSONDecodeError:
                     arguments = {}
 
-            if name != "fetch_wiki_page":
+            if name == "fetch_wiki_page" and use_wiki:
+                page_title = arguments.get("page_title", "")
+                on_status(f'Looking up wiki page "{page_title}"...')
+                try:
+                    result = wiki.fetch_wiki_page(page_title)
+                    pages_used.append(result["title"])
+                    working.append({"role": "tool", "tool_call_id": call_id, "content": json.dumps(result)})
+                except wiki.WikiError as exc:
+                    working.append({"role": "tool", "tool_call_id": call_id, "content": f"Error: {exc}"})
+            elif name == "search_web" and use_websearch:
+                query = arguments.get("query", "")
+                on_status(f'Searching the web for "{query}"...')
+                try:
+                    results = websearch.search_web(query)
+                    queries_used.append(query)
+                    working.append({"role": "tool", "tool_call_id": call_id, "content": json.dumps(results)})
+                except websearch.WebSearchError as exc:
+                    working.append({"role": "tool", "tool_call_id": call_id, "content": f"Error: {exc}"})
+            else:
                 working.append({"role": "tool", "tool_call_id": call_id, "content": f"Error: unknown tool {name!r}"})
-                continue
-
-            page_title = arguments.get("page_title", "")
-            on_status(f'Looking up wiki page "{page_title}"...')
-            try:
-                result = wiki.fetch_wiki_page(page_title)
-                pages_used.append(result["title"])
-                working.append({"role": "tool", "tool_call_id": call_id, "content": json.dumps(result)})
-            except wiki.WikiError as exc:
-                working.append({"role": "tool", "tool_call_id": call_id, "content": f"Error: {exc}"})
 
     return (
         "I wasn't able to finish looking that up - could you try asking again, maybe with a more specific question?",
         pages_used,
+        queries_used,
     )
 
 
@@ -734,6 +772,16 @@ class ChatApp:
             "instead of streaming.",
         )
 
+        self.websearch_var = tk.BooleanVar(value=False)
+        self.websearch_check = ttk.Checkbutton(input_row, text="🌐 Web Search", variable=self.websearch_var)
+        self.websearch_check.pack(side=tk.LEFT, padx=(6, 0), pady=8)
+        ToolTip(
+            self.websearch_check,
+            "Let the assistant search the public web to answer this message. Can be combined "
+            "with Wiki. Turns off again after sending, since it replies all at once instead "
+            "of streaming.",
+        )
+
         self.action_button = ttk.Button(
             input_row, text="Send ➤", style="Accent.TButton", command=self.send_message
         )
@@ -1025,8 +1073,10 @@ class ChatApp:
         self._refresh_attachments_row()
         self._add_user_message(combined, title_hint)
         use_wiki_tool = self.wiki_lookup_var.get()
+        use_websearch_tool = self.websearch_var.get()
         self.wiki_lookup_var.set(False)
-        self._start_generation(use_wiki_tool=use_wiki_tool)
+        self.websearch_var.set(False)
+        self._start_generation(use_wiki_tool=use_wiki_tool, use_websearch_tool=use_websearch_tool)
 
     def _add_user_message(self, text, title_hint=None):
         if self.current["title"] == "New chat":
@@ -1042,16 +1092,22 @@ class ChatApp:
             return
         self.messages.pop()
         self._render_history()
-        self._start_generation(use_wiki_tool=self.wiki_lookup_var.get())
+        self._start_generation(use_wiki_tool=self.wiki_lookup_var.get(), use_websearch_tool=self.websearch_var.get())
 
-    def _start_generation(self, use_wiki_tool=False):
+    def _start_generation(self, use_wiki_tool=False, use_websearch_tool=False):
         self.generation_token += 1
         token = self.generation_token
         self.stream_buffer = ""
         self._append_pending()
         self._set_waiting(True)
-        target = self._fetch_with_wiki_tool if use_wiki_tool else self._fetch
-        threading.Thread(target=target, args=(list(self.messages), token), daemon=True).start()
+        if use_wiki_tool or use_websearch_tool:
+            threading.Thread(
+                target=self._fetch_with_tools,
+                args=(list(self.messages), token, use_wiki_tool, use_websearch_tool),
+                daemon=True,
+            ).start()
+        else:
+            threading.Thread(target=self._fetch, args=(list(self.messages), token), daemon=True).start()
 
     def _fetch(self, messages, token):
         try:
@@ -1090,26 +1146,28 @@ class ChatApp:
         self._append_turn("Assistant", f"[{friendly_error_message(exc)}]", "assistant_label", body_tag="error")
         self._set_waiting(False)
 
-    def _fetch_with_wiki_tool(self, messages, token):
+    def _fetch_with_tools(self, messages, token, use_wiki, use_websearch):
         try:
-            content, pages_used = answer_with_wiki_tool(
+            content, pages_used, queries_used = answer_with_tools(
                 messages,
+                use_wiki=use_wiki,
+                use_websearch=use_websearch,
                 should_stop=lambda: token != self.generation_token,
-                on_status=lambda msg: self.root.after(0, self._on_wiki_status, token, msg),
+                on_status=lambda msg: self.root.after(0, self._on_tool_status, token, msg),
             )
         except Exception as exc:
             if token == self.generation_token:
                 self.root.after(0, self._on_error, token, exc)
             return
         if token == self.generation_token:
-            self.root.after(0, self._on_wiki_fetch_complete, token, content, pages_used)
+            self.root.after(0, self._on_tool_fetch_complete, token, content, pages_used, queries_used)
 
-    def _on_wiki_status(self, token, message):
+    def _on_tool_status(self, token, message):
         if token != self.generation_token:
             return
         self.status_var.set(message)
 
-    def _on_wiki_fetch_complete(self, token, content, pages_used):
+    def _on_tool_fetch_complete(self, token, content, pages_used, queries_used):
         if token != self.generation_token:
             return
         if not content:
@@ -1117,9 +1175,13 @@ class ChatApp:
             self._render_history()
             self._set_waiting(False)
             return
+        notes = []
         if pages_used:
-            pages_note = ", ".join(f'"{p}"' for p in pages_used)
-            content = f"🔎 **Looked up wiki page:** {pages_note}\n\n{content}"
+            notes.append("🔎 **Looked up wiki page:** " + ", ".join(f'"{p}"' for p in pages_used))
+        if queries_used:
+            notes.append("🌐 **Searched the web:** " + ", ".join(f'"{q}"' for q in queries_used))
+        if notes:
+            content = "\n\n".join(notes) + f"\n\n{content}"
         self.messages.append({"role": "assistant", "content": content})
         self._render_history()
         self._set_waiting(False)
