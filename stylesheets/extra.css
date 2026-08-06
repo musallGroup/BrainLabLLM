@@ -1,0 +1,29 @@
+/* Brand color override to exactly match the app's theme.py palette,
+   rather than Material's closest built-in preset. */
+:root {
+  --md-primary-fg-color: #6C5CE7;
+  --md-primary-fg-color--light: #8B7EF0;
+  --md-primary-fg-color--dark: #5A4BD4;
+  --md-accent-fg-color: #6C5CE7;
+}
+
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color: #6C5CE7;
+  --md-accent-fg-color: #8B7EF0;
+}
+
+.md-typeset .grid.cards > ul > li,
+.md-typeset .grid.cards > ol > li {
+  border-radius: 0.5rem;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.md-typeset .grid.cards > ul > li:hover,
+.md-typeset .grid.cards > ol > li:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 14px rgba(108, 92, 231, 0.18);
+}
+
+.md-typeset code {
+  border-radius: 4px;
+}
