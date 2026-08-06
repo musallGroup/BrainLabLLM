@@ -47,6 +47,10 @@ You're most likely not connected to the lab network. Connect via VPN or on-site,
 
 Open **File → Settings**, update the **Server address**, click **Test Connection** to confirm it works, then **Save** and restart the app. See [Settings](user-guide/settings.md).
 
+### Web Search says it can't reach the search service
+
+Web search runs through a separate service on the lab network, independent of the AI server itself — being connected to the lab network for normal chat doesn't guarantee this service is also reachable. If regular chat and wiki lookup work fine but web search specifically doesn't, this is most likely that service being down or not reachable from your machine; report it to whoever manages this tool for your lab rather than assuming it's something you can fix from Settings.
+
 ### A file I tried to attach was rejected
 
 Only text-based files are supported (source code, `.txt`, `.md`, config files, logs, etc.) — the AI model reads text, not images or binary formats like `.pdf` or `.docx`. Very large files (over roughly 200 KB) are truncated rather than rejected outright; a truncated attachment is marked as such.

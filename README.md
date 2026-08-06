@@ -19,6 +19,8 @@ Built for people with zero coding experience: a double-click installer, no Pytho
 ## Features
 
 - 💬 **Chat** with markdown/code rendering, conversation history, and file attachments
+- 🔎 **Wiki lookup & web search** — opt-in, per-message tools that let the assistant fetch a page from the lab's internal wiki or search the public web, both staying on the lab network
+- 🤖 **Agent tab** — an approval-gated coding assistant that can read, edit, and run commands in a project folder, showing every change before it happens
 - 🎙️ **Meeting recording** with a locally-bundled speech-to-text model (GPU-accelerated, CPU fallback), or transcribe an existing audio/video file
 - 🗣️ **Speaker identification** — labels who's talking in the transcript and summary (requires a GPU)
 - ✨ **AI summaries** that scale to hour-long meetings via map-reduce summarization
@@ -53,6 +55,8 @@ main.py          Tkinter UI, chat networking, summarization
 meeting.py       Audio recording + transcription (no UI dependency)
 diarization.py   Speaker identification (no UI dependency)
 agent.py         Coding-agent tool-calling loop (no UI dependency)
+wiki.py          Lab wiki lookup tool (no UI dependency)
+websearch.py     Public web search tool via local SearXNG (no UI dependency)
 theme.py         Color palette + ttk.Style setup
 installer.py     Standalone installer GUI
 tests/           Automated pytest suite

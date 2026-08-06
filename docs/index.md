@@ -26,6 +26,18 @@ A desktop app that gives your lab a private AI chat and meeting-notes assistant 
 
     Turn any transcript into structured notes — Key Points, Decisions, Action Items — with one click, even for hour-long meetings.
 
+-   :material-book-search-outline:{ .lg .middle } **Wiki & Web Lookup**
+
+    ---
+
+    Opt-in, per-message tools that let the assistant fetch a page from the lab's internal wiki or search the public web to answer a specific question — both staying on the lab network.
+
+-   :material-robot-outline:{ .lg .middle } **AI Coding Agent**
+
+    ---
+
+    An approval-gated assistant that can read, edit, and run commands in a project folder on your machine — every change is shown to you before it happens.
+
 -   :material-download-box-outline:{ .lg .middle } **Zero-Friction Install**
 
     ---
@@ -43,11 +55,13 @@ Cloud AI assistants are convenient, but sending meeting audio or proprietary cod
 
 ## What it looks like
 
-The app has two tabs:
+The app has three tabs:
 
-**Chat** — a familiar chat interface with a conversation sidebar, markdown-formatted replies (including syntax-highlighted code blocks), and file attachments.
+**Chat** — a familiar chat interface with a conversation sidebar, markdown-formatted replies (including syntax-highlighted code blocks), file attachments, and opt-in wiki lookup / web search per message.
 
 **Meeting** — pick a microphone, hit Record, talk. When you stop, the full recording is transcribed in one pass and shown in a transcript panel. From there, a Summarize button produces structured notes, and you can export or save the result.
+
+**Agent** — point it at a project folder and ask for a code change; it proposes edits and commands, and nothing runs until you approve it.
 
 ## Requirements
 

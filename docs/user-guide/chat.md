@@ -52,7 +52,7 @@ Once you attach a file, it appears as a small chip above the input box showing i
 
 Check **🔎 Wiki** next to the input box before sending a message to let the assistant fetch a page from the lab's internal wiki (`wiki2.bio2.rwth-aachen.de`) if it thinks the answer is there — lab rules, procedures, equipment, protocols, and similar lab-specific topics, rather than general knowledge. Ask something like *"what does the wiki say about systems neurophysiology?"* and it'll look up the relevant page itself.
 
-This only reaches that one internal wiki, nothing else on the internet — no accounts, no API keys, and nothing ever leaves the lab network. See [Architecture](../architecture.md#wiki-lookup) for why this is a purpose-built tool rather than general web search.
+This only reaches that one internal wiki, nothing else on the internet — no accounts, no API keys, and nothing ever leaves the lab network. See [Architecture](../architecture.md#wiki-lookup) for why this was originally built as a purpose-built tool rather than reusing general web search (below).
 
 A couple of things worth knowing:
 
@@ -60,3 +60,9 @@ A couple of things worth knowing:
 - **The checkbox turns itself off after every send** (like attachments) rather than staying on — so it only affects the one message you checked it for, not every message afterward.
 - If the reply used the wiki, it starts with a small **🔎 Looked up wiki page: ...** note naming the page, so you can tell it wasn't just answering from general knowledge.
 - If the page doesn't exist (wrong title, typo), the assistant says so in its reply rather than showing an error — it's told about the failure and can react to it, the same way a person would if a link 404'd.
+
+## Searching the web { #web-search }
+
+Check **🌐 Web Search** next to the input box to let the assistant search the public web to answer this message — for current information or general questions the wiki wouldn't have. It can be checked together with **🔎 Wiki** on the same message if you want both consulted.
+
+This goes through a search instance hosted on the lab network, not a third-party cloud search API — same non-streaming trade-off and same "turns itself off after sending" behavior as the wiki checkbox. If the reply used it, it starts with a **🌐 Searched the web: ...** note naming the search terms used.
