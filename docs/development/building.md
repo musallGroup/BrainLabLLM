@@ -48,10 +48,12 @@ BrainLabLLM/
 ├── meeting.py         # Audio recording + transcription (no UI dependency)
 ├── diarization.py      # Speaker identification (no UI dependency)
 ├── agent.py             # Coding-agent tool-calling loop (no UI dependency)
-├── theme.py               # Color palette + ttk.Style setup
-├── installer.py             # Standalone installer GUI (built separately)
-├── app_icon.ico               # App icon, used for both the exe and window icon
-├── tests/                       # Automated pytest suite (agent.py + diarization.py)
+├── wiki.py               # Lab wiki lookup tool (no UI dependency)
+├── websearch.py            # Public web search tool via local SearXNG (no UI dependency)
+├── theme.py                  # Color palette + ttk.Style setup
+├── installer.py                # Standalone installer GUI (built separately)
+├── app_icon.ico                  # App icon, used for both the exe and window icon
+├── tests/                          # Automated pytest suite
 ├── packaging/                     # Tracked sources for files assembled into dist/ at build time
 ├── mkdocs.yml                       # This documentation site's configuration
 └── docs/                              # This documentation site's content
