@@ -20,6 +20,16 @@ WIKI_DOMAIN = "wiki2.bio2.rwth-aachen.de"
 # (intraweb.bio2.rwth-aachen.de), so forcing https breaks the connection.
 WIKI_BASE_URL = f"http://{WIKI_DOMAIN}/index.php/"
 
+# This lab's own page on the (institute-wide) wiki - not the site's overall
+# Main_Page, which indexes many unrelated labs/services. Given to the model
+# as a fallback starting point when it doesn't know an exact page title,
+# since fetch_wiki_page has no search/browse capability of its own - without
+# this, the model's only option is guessing a title from how the user
+# phrased their question, which routinely doesn't match the wiki's real
+# title. Everything this app's users actually want should be this page or
+# something it links to.
+WIKI_LANDING_PAGE = "Systems_Neurophysiology"
+
 MAX_WIKI_PAGE_CHARS = 8000  # 2x chunk_text()'s per-chunk target - generous but bounded
 REQUEST_TIMEOUT_SECONDS = 15
 
@@ -42,6 +52,11 @@ BLOCK_TAGS = {"p", "div", "li", "h1", "h2", "h3", "h4", "h5", "h6", "tr", "br", 
 # string prefix), this just rejects obviously-malformed input earlier with
 # a clearer error than an eventual 404 would.
 TITLE_RE = re.compile(r"^[\w \-().,'&/]+$")
+
+# Matches this wiki's internal content-link form (/index.php/Title, no query
+# string) - deliberately excludes /index.php?title=...&action=edit style
+# links (edit/oldid links, already stripped via SKIP_CLASS_MARKERS anyway).
+INTERNAL_LINK_HREF_RE = re.compile(r"^/index\.php/([^?#]+)$")
 
 
 class WikiError(Exception):
@@ -68,6 +83,8 @@ class _MediaWikiContentExtractor(html.parser.HTMLParser):
         self.depth = 0
         self.content_open_depth = None  # depth at which #mw-content-text opened; None until found
         self.skip_open_depth = None  # depth at which a stripped subtree opened
+        self.pending_link_title = None  # real page title of the <a> currently open, if internal
+        self.pending_link_open_depth = None
         self.chunks = []
 
     @property
@@ -105,6 +122,12 @@ class _MediaWikiContentExtractor(html.parser.HTMLParser):
         if self.in_content and not self.skipping and tag in BLOCK_TAGS:
             self.chunks.append("\n")
 
+        if self.in_content and not self.skipping and tag == "a" and not is_void:
+            match = INTERNAL_LINK_HREF_RE.match(attrs_dict.get("href", ""))
+            if match:
+                self.pending_link_title = urllib.parse.unquote(match.group(1))
+                self.pending_link_open_depth = self.depth
+
         if not is_void:
             self.depth += 1
 
@@ -116,6 +139,13 @@ class _MediaWikiContentExtractor(html.parser.HTMLParser):
             self.skip_open_depth = None
         elif self.in_content and self.depth == self.content_open_depth:
             self.content_open_depth = None
+        if self.pending_link_open_depth is not None and self.depth == self.pending_link_open_depth:
+            # Annotated right after the link's own visible text, so the model
+            # gets the real fetchable title instead of guessing from label
+            # text alone - MediaWiki link text and page title routinely differ.
+            self.chunks.append(f' [page_title: "{self.pending_link_title}"]')
+            self.pending_link_title = None
+            self.pending_link_open_depth = None
 
     def handle_data(self, data):
         if self.in_content and not self.skipping:

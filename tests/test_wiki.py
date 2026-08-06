@@ -85,6 +85,29 @@ def test_extractor_real_saved_page():
     assert "Retrieved from" not in text
 
 
+def test_extractor_annotates_internal_links_with_real_page_title():
+    """MediaWiki link text and the actual page title routinely differ (piped
+    links) - the model needs the real title, not the visible label, to make
+    a working follow-up fetch_wiki_page call."""
+    text = _extract(REAL_SAVED_PAGE_HTML)
+    assert 'Brain Lab Rules [page_title: "Brain_Lab_Rules"]' in text
+
+
+def test_extractor_does_not_annotate_edit_or_permalink_links():
+    text = _extract(REAL_SAVED_PAGE_HTML)
+    # The printfooter's permalink (index.php?title=...&oldid=...) and the
+    # editsection's edit link are both stripped entirely (already covered by
+    # other tests), so no [page_title: ...] marker should appear for either.
+    assert text.count("[page_title:") == 1
+
+
+def test_extractor_does_not_annotate_non_index_php_links():
+    html_with_short_link = SAMPLE_HTML  # uses href="/Other_Page", not /index.php/Other_Page
+    text = _extract(html_with_short_link)
+    assert "[page_title:" not in text
+    assert "A second paragraph with a wiki link inside it." in text
+
+
 def test_url_construction_replaces_spaces_with_underscores():
     with mock.patch("wiki.requests.get") as mock_get:
         mock_get.return_value = _fake_response(200, SAMPLE_HTML)
