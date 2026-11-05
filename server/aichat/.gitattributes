@@ -1,0 +1,4 @@
+# Run or applied on Linux; a CRLF checkout on Windows would break them.
+*.sh text eol=lf
+*.patch text eol=lf
+*.service text eol=lf

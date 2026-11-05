@@ -1,0 +1,599 @@
+diff --git a/Model/Ollama/ChatModel.php b/Model/Ollama/ChatModel.php
+index 4e1e978..1bd4b17 100644
+--- a/Model/Ollama/ChatModel.php
++++ b/Model/Ollama/ChatModel.php
+@@ -2,9 +2,9 @@
+ 
+ namespace dokuwiki\plugin\aichat\Model\Ollama;
+ 
+-use dokuwiki\plugin\aichat\Model\ChatInterface;
++use dokuwiki\plugin\aichat\Model\StreamingChatInterface;
+ 
+-class ChatModel extends AbstractOllama implements ChatInterface
++class ChatModel extends AbstractOllama implements StreamingChatInterface
+ {
+     /** @inheritdoc */
+     public function getAnswer(array $messages): string
+@@ -23,4 +23,96 @@ class ChatModel extends AbstractOllama implements ChatInterface
+         $content = preg_replace('/^<think>.*?(?:<\/think>)/s', '', $content);
+         return $content;
+     }
++
++    /** @inheritdoc */
++    public function streamAnswer(array $messages, callable $onPiece): string
++    {
++        try {
++            return $this->streamChat($messages, true, $onPiece);
++        } catch (\Exception $e) {
++            // models without reasoning refuse "think"; answer without it then
++            if (!str_contains($e->getMessage(), 'think')) throw $e;
++            return $this->streamChat($messages, false, $onPiece);
++        }
++    }
++
++    /**
++     * Stream one chat request from Ollama's NDJSON response
++     *
++     * DokuHTTPClient only returns complete bodies, so this uses cURL directly.
++     *
++     * @param array $messages
++     * @param bool $think ask for the model's reasoning
++     * @param callable $onPiece
++     * @return string The complete answer
++     * @throws \Exception
++     */
++    protected function streamChat(array $messages, bool $think, callable $onPiece): string
++    {
++        $data = [
++            'messages' => $messages,
++            'model' => $this->getModelName(),
++            'stream' => true,
++            'options' => [
++                'num_ctx' => $this->getMaxInputTokenLength() ?: 512
++            ]
++        ];
++        if ($think) $data['think'] = true;
++
++        $answer = '';
++        $buffer = '';
++        $error = '';
++        $handleLine = function (string $line) use (&$answer, &$error, $onPiece) {
++            $piece = json_decode(trim($line), true);
++            if (!is_array($piece)) return;
++            if (isset($piece['error'])) {
++                $error = is_array($piece['error']) ? $piece['error']['message'] : $piece['error'];
++                return;
++            }
++            if (($piece['message']['thinking'] ?? '') !== '') {
++                $onPiece('thinking', $piece['message']['thinking']);
++            }
++            if (($piece['message']['content'] ?? '') !== '') {
++                $answer .= $piece['message']['content'];
++                $onPiece('answer', $piece['message']['content']);
++            }
++            if (!empty($piece['done'])) {
++                $this->inputTokensUsed += $piece['prompt_eval_count'] ?? 0;
++                $this->outputTokensUsed += $piece['eval_count'] ?? 0;
++            }
++        };
++
++        $this->requestStart = microtime(true);
++        $this->requestsMade++;
++        $curl = curl_init($this->apiurl . '/chat');
++        curl_setopt_array($curl, [
++            CURLOPT_POST => true,
++            CURLOPT_POSTFIELDS => json_encode($data, JSON_THROW_ON_ERROR),
++            CURLOPT_HTTPHEADER => [
++                'Content-Type: application/json',
++                'Authorization: Bearer ' . $this->getFromConf('apikey'),
++            ],
++            CURLOPT_CONNECTTIMEOUT => 10,
++            // reasoning can take minutes; give up only when nothing arrives for two minutes
++            CURLOPT_LOW_SPEED_LIMIT => 1,
++            CURLOPT_LOW_SPEED_TIME => 120,
++            CURLOPT_WRITEFUNCTION => function ($curl, $chunk) use (&$buffer, $handleLine) {
++                $buffer .= $chunk;
++                while (($pos = strpos($buffer, "\n")) !== false) {
++                    $handleLine(substr($buffer, 0, $pos));
++                    $buffer = substr($buffer, $pos + 1);
++                }
++                return strlen($chunk);
++            },
++        ]);
++        $ok = curl_exec($curl);
++        $curlError = curl_error($curl);
++        curl_close($curl);
++        $handleLine($buffer); // an error body has no trailing newline
++        $this->timeUsed += microtime(true) - $this->requestStart;
++
++        if ($error !== '') throw new \Exception('Ollama API error: ' . $error, 3002);
++        if ($ok === false) throw new \Exception('API returned no response. ' . $curlError, 2004);
++        return preg_replace('/^<think>.*?(?:<\/think>)/s', '', $answer);
++    }
+ }
+diff --git a/Model/StreamingChatInterface.php b/Model/StreamingChatInterface.php
+new file mode 100644
+index 0000000..5f7a14c
+--- /dev/null
++++ b/Model/StreamingChatInterface.php
+@@ -0,0 +1,19 @@
++<?php
++
++namespace dokuwiki\plugin\aichat\Model;
++
++/**
++ * A chat model that can hand out its reasoning and answer while they are generated
++ */
++interface StreamingChatInterface extends ChatInterface
++{
++    /**
++     * Answer a given question, passing each generated piece to a callback
++     *
++     * @param array $messages Messages in OpenAI format (with role and content)
++     * @param callable $onPiece Called as $onPiece(string $type, string $text), $type is 'thinking' or 'answer'
++     * @return string The complete answer
++     * @throws \Exception
++     */
++    public function streamAnswer(array $messages, callable $onPiece): string;
++}
+diff --git a/action.php b/action.php
+index 127be5e..ac0ca14 100644
+--- a/action.php
++++ b/action.php
+@@ -25,6 +25,9 @@ class action_plugin_aichat extends ActionPlugin
+     /**
+      * Event handler for AJAX_CALL_UNKNOWN event
+      *
++     * With stream=1 the reply is NDJSON: 'thinking' and 'answer' pieces while the model writes,
++     * then one 'done' line with the same fields as the plain JSON reply.
++     *
+      * @see https://www.dokuwiki.org/devel:events:ajax_call_unknown
+      * @param Event $event Event object
+      * @param mixed $param optional parameter passed when event was registered
+@@ -43,19 +46,25 @@ class action_plugin_aichat extends ActionPlugin
+         $question = $INPUT->post->str('question');
+         $pagecontext = $INPUT->post->str('pagecontext');
+         $history = json_decode((string)$INPUT->post->str('history'), null, 512, JSON_THROW_ON_ERROR);
+-        header('Content-Type: application/json');
++        $stream = $INPUT->post->bool('stream') && $this->getConf('streamThinking');
++        if ($stream) {
++            $this->startStream();
++        } else {
++            header('Content-Type: application/json');
++        }
+ 
+         if (!$helper->userMayAccess()) {
+-            echo json_encode([
++            $this->reply($stream, [
+                 'question' => $question,
+                 'answer' => $this->getLang('restricted'),
+                 'sources' => [],
+-            ], JSON_THROW_ON_ERROR);
++            ]);
+             return;
+         }
+ 
+         try {
+-            $result = $helper->askChatQuestion($question, $history, $pagecontext);
++            $onPiece = $stream ? fn($type, $text) => $this->emit(['type' => $type, 'text' => $text]) : null;
++            $result = $helper->askChatQuestion($question, $history, $pagecontext, $onPiece);
+             $sources = [];
+             foreach ($result['sources'] as $source) {
+                 /** @var Chunk $source */
+@@ -70,11 +79,13 @@ class action_plugin_aichat extends ActionPlugin
+             $parseDown = new Parsedown();
+             $parseDown->setSafeMode(true);
+ 
+-            echo json_encode([
++            $this->reply($stream, [
+                 'question' => $result['question'],
+                 'answer' => $parseDown->text($result['answer']),
++                // the history sent back with the next question needs the model's own text, not HTML
++                'markdown' => $result['answer'],
+                 'sources' => array_values($sources),
+-            ], JSON_THROW_ON_ERROR);
++            ]);
+ 
+             if ($this->getConf('logging')) {
+                 Logger::getInstance('aichat')->log(
+@@ -91,11 +102,56 @@ class action_plugin_aichat extends ActionPlugin
+             }
+         } catch (\Exception $e) {
+             ErrorHandler::logException($e);
+-            echo json_encode([
++            $this->reply($stream, [
+                 'question' => $question,
+                 'answer' => 'An error occurred. More info may be available in the error log. ' . $e->getMessage(),
+                 'sources' => [],
+-            ], JSON_THROW_ON_ERROR);
++            ]);
++        }
++    }
++
++    /**
++     * Prepare the response for streaming
++     *
++     * Every buffer between here and the browser has to pass each line on at once, or the
++     * reasoning only shows up together with the finished answer.
++     */
++    protected function startStream()
++    {
++        // discard, not flush: DokuWiki's gzip_output buffer would compress the whole stream
++        while (ob_get_level()) ob_end_clean();
++        header_remove('Content-Encoding');
++        ini_set('zlib.output_compression', '0');
++        if (function_exists('apache_setenv')) apache_setenv('no-gzip', '1');
++        header('Content-Type: application/x-ndjson; charset=utf-8');
++        header('Cache-Control: no-cache');
++        header('X-Accel-Buffering: no'); // nginx
++        set_time_limit(0);
++    }
++
++    /**
++     * Send one line of the stream
++     *
++     * @param array $line
++     */
++    protected function emit(array $line)
++    {
++        echo json_encode($line, JSON_THROW_ON_ERROR) . "\n";
++        flush();
++    }
++
++    /**
++     * Send the final reply, as the last stream line or as plain JSON
++     *
++     * @param bool $stream
++     * @param array $data
++     */
++    protected function reply(bool $stream, array $data)
++    {
++        if ($stream) {
++            $this->emit(['type' => 'done'] + $data);
++        } else {
++            echo json_encode($data, JSON_THROW_ON_ERROR);
+         }
+     }
+ }
+diff --git a/conf/default.php b/conf/default.php
+index c26ed5e..15d8ad3 100755
+--- a/conf/default.php
++++ b/conf/default.php
+@@ -53,6 +53,7 @@ $conf['contextChunks'] = 5;
+ $conf['fullpagecontext'] = 0;
+ $conf['chatHistory'] = 1;
+ $conf['rephraseHistory'] = 1;
++$conf['streamThinking'] = 1;
+ 
+ $conf['logging'] = 0;
+ $conf['restrict'] = '';
+diff --git a/conf/metadata.php b/conf/metadata.php
+index 11a8ab9..48b01e5 100755
+--- a/conf/metadata.php
++++ b/conf/metadata.php
+@@ -60,6 +60,7 @@ $meta['contextChunks'] = array('numeric', '_min' => 1, '_regexp' => '/^\d+$/');
+ $meta['fullpagecontext'] = array('numeric',  '_min' => 0, '_regexp' => '/^\d+$/');
+ $meta['chatHistory'] = array('numeric', '_min' => 0, '_regexp' => '/^\d+$/');
+ $meta['rephraseHistory'] = array('numeric', '_min' => 0, '_regexp' => '/^\d+$/');
++$meta['streamThinking'] = array('onoff');
+ 
+ $meta['logging'] = array('onoff');
+ $meta['restrict'] = array('string');
+diff --git a/helper.php b/helper.php
+index cc5028c..e2e8105 100644
+--- a/helper.php
++++ b/helper.php
+@@ -7,6 +7,7 @@ use dokuwiki\plugin\aichat\Chunk;
+ use dokuwiki\plugin\aichat\Embeddings;
+ use dokuwiki\plugin\aichat\Model\ChatInterface;
+ use dokuwiki\plugin\aichat\Model\EmbeddingInterface;
++use dokuwiki\plugin\aichat\Model\StreamingChatInterface;
+ use dokuwiki\plugin\aichat\ModelFactory;
+ use dokuwiki\plugin\aichat\Storage\AbstractStorage;
+ 
+@@ -164,10 +165,12 @@ class helper_plugin_aichat extends Plugin
+      *
+      * @param string $question
+      * @param array[] $history The chat history [[user, ai], [user, ai], ...]
++     * @param string $sourcePage The page the question was asked on
++     * @param callable|null $onPiece Receives reasoning and answer pieces while they are generated
+      * @return array ['question' => $question, 'answer' => $answer, 'sources' => $sources]
+      * @throws Exception
+      */
+-    public function askChatQuestion($question, $history = [], $sourcePage = '')
++    public function askChatQuestion($question, $history = [], $sourcePage = '', ?callable $onPiece = null)
+     {
+         if ($history && $this->getConf('rephraseHistory') > 0) {
+             $contextQuestion = $this->rephraseChatQuestion($question, $history);
+@@ -179,7 +182,7 @@ class helper_plugin_aichat extends Plugin
+         } else {
+             $contextQuestion = $question;
+         }
+-        return $this->askQuestion($question, $history, $contextQuestion, $sourcePage);
++        return $this->askQuestion($question, $history, $contextQuestion, $sourcePage, $onPiece);
+     }
+ 
+     /**
+@@ -189,10 +192,11 @@ class helper_plugin_aichat extends Plugin
+      * @param array $history [user, ai] of the previous question
+      * @param string $contextQuestion The question to use for context search
+      * @param string $sourcePage The page the question was asked on
++     * @param callable|null $onPiece Receives reasoning and answer pieces while they are generated
+      * @return array ['question' => $question, 'answer' => $answer, 'sources' => $sources]
+      * @throws Exception
+      */
+-    public function askQuestion($question, $history = [], $contextQuestion = '', $sourcePage = '')
++    public function askQuestion($question, $history = [], $contextQuestion = '', $sourcePage = '', ?callable $onPiece = null)
+     {
+         if ($sourcePage) {
+             // only the current page is context
+@@ -236,7 +240,12 @@ class helper_plugin_aichat extends Plugin
+             $history,
+             $this->getConf('chatHistory')
+         );
+-        $answer = $this->getChatModel()->getAnswer($messages);
++        $model = $this->getChatModel();
++        if ($onPiece && $model instanceof StreamingChatInterface) {
++            $answer = $model->streamAnswer($messages, $onPiece);
++        } else {
++            $answer = $model->getAnswer($messages);
++        }
+ 
+         return [
+             'question' => $question,
+diff --git a/lang/de/lang.php b/lang/de/lang.php
+index 3e0dbf7..fc3baad 100644
+--- a/lang/de/lang.php
++++ b/lang/de/lang.php
+@@ -13,3 +13,5 @@ $lang['send-button'] = 'Frage senden [Enter]';
+ $lang['restart-button'] = 'Gespräch neu starten';
+ $lang['close-button'] = 'Schließen';
+ $lang['fullscreen-button'] = 'Vollbild umschalten';
++$lang['js']['thinking'] = 'Denkt nach…';
++$lang['js']['reasoning'] = 'Überlegungen';
+diff --git a/lang/en/lang.php b/lang/en/lang.php
+index 844fc8d..2c624d1 100644
+--- a/lang/en/lang.php
++++ b/lang/en/lang.php
+@@ -15,3 +15,5 @@ $lang['close-button'] = 'Close';
+ $lang['fullscreen-button'] = 'Toggle fullscreen';
+ $lang['pagecontext'] = 'Enable to ask about the current page.';
+ $lang['js']['error'] = 'Sorry, something went wrong';
++$lang['js']['thinking'] = 'Thinking…';
++$lang['js']['reasoning'] = 'Reasoning';
+diff --git a/lang/en/settings.php b/lang/en/settings.php
+index 560f01b..8fe1ffa 100755
+--- a/lang/en/settings.php
++++ b/lang/en/settings.php
+@@ -44,6 +44,7 @@ $lang['contextChunks'] = 'Maximum number of chunks to send to the AI model for c
+ $lang['fullpagecontext'] = 'Always send the full page content for each matching chunk as context for the AI model. This will not apply any token limits and may result in large, expensive requests. Use with large context models only! The number you configure here is the number of pages sent at most. It can not be larger than contextChunks. Leave at 0 to disable and use the chunks only.';
+ $lang['chatHistory'] = 'Number of previous chat messages to consider for context in the conversation.';
+ $lang['rephraseHistory'] = 'Number of previous chat messages to consider for context when rephrasing a question. Set to 0 to disable rephrasing.';
++$lang['streamThinking'] = 'Show the answer while it is written, with the reasoning of the model before it (Ollama models). The web server must not buffer responses of <code>lib/exe/ajax.php</code>.';
+ 
+ $lang['logging'] = 'Log all questions and answers. Use the <a href="?do=admin&page=logviewer&facility=aichat">Log Viewer</a> to access.';
+ $lang['restrict'] = 'Restrict access to these users and groups (comma separated). Leave empty to allow all users.';
+diff --git a/plugin.info.txt b/plugin.info.txt
+index d229851..6ae109e 100644
+--- a/plugin.info.txt
++++ b/plugin.info.txt
+@@ -1,8 +1,8 @@
+ base   aichat
+ author Andreas Gohr
+ email  gohr@cosmocode.de
+-date   2026-08-27
++date   2026-11-05
+ name   aichat plugin
+-desc   Chat with a LLM about the contents of your wiki
++desc   Chat with a LLM about the contents of your wiki (patched: streamed answers with the model's reasoning)
+ url    https://www.dokuwiki.org/plugin:aichat
+ minphp 8.1
+diff --git a/script/AIChatChat.js b/script/AIChatChat.js
+index 8712d6f..6368016 100644
+--- a/script/AIChatChat.js
++++ b/script/AIChatChat.js
+@@ -207,6 +207,23 @@ class AIChatChat extends HTMLElement {
+             .output > div.human pre {
+                 scrollbar-color: var(--color-link) var(--color-human);
+             }
++            .output details.thinking {
++                font-size: 0.85em;
++                opacity: 0.75;
++                margin-bottom: 0.5em;
++            }
++            .output details.thinking summary {
++                cursor: pointer;
++            }
++            .output details.thinking div {
++                white-space: pre-wrap;
++                max-height: 12em;
++                overflow: auto;
++                scrollbar-width: thin;
++            }
++            .output .streaming {
++                white-space: pre-wrap;
++            }
+         `;
+         return style;
+     }
+@@ -227,7 +244,7 @@ class AIChatChat extends HTMLElement {
+             this.#history = JSON.parse(history);
+             this.#history.forEach(row => {
+                 this.displayMessage(row[0]);
+-                this.displayMessage(row[1], row[2]);
++                this.displayMessage(row[3] ?? row[1], row[2]); // older entries hold the HTML in row[1]
+             });
+         }
+     }
+@@ -267,12 +284,20 @@ class AIChatChat extends HTMLElement {
+         this.#input.value = '';
+         this.startProgress();
+         try {
+-            const response = await this.sendMessage(message, this.getPageContext());
+-            this.#history.push([response.question, response.answer, response.sources]);
++            const response = this.getAttribute('stream') === '1'
++                ? await this.streamMessage(message, this.getPageContext())
++                : await this.sendMessage(message, this.getPageContext());
++            // the model gets its own text back as history, the HTML is only for display
++            this.#history.push([response.question, response.markdown ?? response.answer, response.sources, response.answer]);
+             this.saveHistory();
+             p.textContent = response.question; // replace original question with interpretation
+             p.title = message; // show original question on hover
+-            this.displayMessage(response.answer, response.sources); // display the answer
++            if (response.live) {
++                this.fillMessage(response.live, response.answer, response.sources);
++                if (response.thinking) response.live.prepend(response.thinking);
++            } else {
++                this.displayMessage(response.answer, response.sources); // display the answer
++            }
+         } catch (e) {
+             console.error(e);
+             this.displayMessage(LANG.plugins.aichat.error, {});
+@@ -326,12 +351,26 @@ class AIChatChat extends HTMLElement {
+         const div = document.createElement('div');
+         if(sources !== null) {
+             div.classList.add('ai');
+-            div.innerHTML = message; // we get HTML for AI messages
++            this.fillMessage(div, message, sources);
+         } else {
+             div.classList.add('user');
+             div.textContent = message;
+         }
+ 
++        this.#output.appendChild(div);
++        return div;
++    }
++
++    /**
++     * Set the content of an AI message
++     *
++     * @param {HTMLDivElement} div
++     * @param {string} message HTML
++     * @param {object|null} sources
++     */
++    fillMessage(div, message, sources) {
++        div.innerHTML = message; // we get HTML for AI messages
++
+         if (sources !== null && sources.length > 0) {
+             const ul = document.createElement('ul');
+             sources.forEach((source) => {
+@@ -345,9 +384,6 @@ class AIChatChat extends HTMLElement {
+             });
+             div.appendChild(ul);
+         }
+-
+-        this.#output.appendChild(div);
+-        return div;
+     }
+ 
+     /**
+@@ -358,17 +394,92 @@ class AIChatChat extends HTMLElement {
+      * @returns {Promise<object>}
+      */
+     async sendMessage(message, pageContext = '') {
+-        const formData = new FormData();
+-        formData.append('question', message);
+-        formData.append('history', JSON.stringify(this.#history));
+-        formData.append('pagecontext', pageContext);
++        const response = await fetch(this.getAttribute('url') || '/', {
++            method: 'POST',
++            body: this.getFormData(message, pageContext)
++        });
++
++        return await response.json();
++    }
+ 
++    /**
++     * Send a question to the server and show the reasoning and answer while they arrive
++     *
++     * @param {string} message
++     * @param {string} pageContext The current page ID if it should be used as context
++     * @returns {Promise<object>} The final reply, plus the live message element and the reasoning block
++     */
++    async streamMessage(message, pageContext = '') {
++        const formData = this.getFormData(message, pageContext);
++        formData.append('stream', '1');
+         const response = await fetch(this.getAttribute('url') || '/', {
+             method: 'POST',
+             body: formData
+         });
++        if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`);
++
++        const live = this.displayMessage('', {});
++        const thinking = document.createElement('details');
++        thinking.classList.add('thinking');
++        thinking.open = true;
++        const summary = document.createElement('summary');
++        summary.textContent = LANG.plugins.aichat.thinking;
++        const thoughts = document.createElement('div');
++        thinking.append(summary, thoughts);
++        const answer = document.createElement('div');
++        answer.classList.add('streaming');
++
++        const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
++        let buffer = '';
++        let reply = null;
++        for (;;) {
++            const {value, done} = await reader.read();
++            if (done) break;
++            buffer += value;
++            let end;
++            while ((end = buffer.indexOf('\n')) >= 0) {
++                const line = buffer.slice(0, end).trim();
++                buffer = buffer.slice(end + 1);
++                if (!line) continue;
++                const piece = JSON.parse(line);
++                if (piece.type === 'thinking') {
++                    if (!thinking.isConnected) live.prepend(thinking);
++                    thoughts.textContent += piece.text;
++                    thoughts.scrollTop = thoughts.scrollHeight;
++                } else if (piece.type === 'answer') {
++                    if (!answer.isConnected) live.append(answer);
++                    if (thinking.open) {
++                        thinking.open = false;
++                        summary.textContent = LANG.plugins.aichat.reasoning;
++                    }
++                    answer.textContent += piece.text;
++                } else if (piece.type === 'done') {
++                    reply = piece;
++                }
++            }
++        }
++        if (!reply) {
++            live.remove();
++            throw new Error('the answer stream ended early');
++        }
++        thinking.open = false;
++        summary.textContent = LANG.plugins.aichat.reasoning;
++        reply.live = live;
++        reply.thinking = thinking.isConnected ? thinking : null;
++        return reply;
++    }
+ 
+-        return await response.json();
++    /**
++     * @param {string} message
++     * @param {string} pageContext
++     * @returns {FormData}
++     */
++    getFormData(message, pageContext) {
++        const formData = new FormData();
++        formData.append('question', message);
++        formData.append('history', JSON.stringify(this.#history));
++        formData.append('pagecontext', pageContext);
++        return formData;
+     }
+ }
+ 
+diff --git a/syntax/chat.php b/syntax/chat.php
+index dba7630..f1b32cc 100644
+--- a/syntax/chat.php
++++ b/syntax/chat.php
+@@ -68,6 +68,7 @@ class syntax_plugin_aichat_chat extends SyntaxPlugin
+             'title-send' => $this->getLang('send-button'),
+             'title-restart' => $this->getLang('restart-button'),
+             'title-pagecontext' => $this->getLang('pagecontext'),
++            'stream' => $this->getConf('streamThinking') ? '1' : '0',
+         ];
+         $html = '<aichat-chat ' . buildAttributes($opts) . '></aichat-chat>';
+ 
